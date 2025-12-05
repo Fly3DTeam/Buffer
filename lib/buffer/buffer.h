@@ -52,10 +52,10 @@
 #define KEY2        PB12 // Forward button / 前进
 
 // Motor driver pins / 电机驱动引脚
-#define EN_PIN       PA6  // Enable / 使能
-#define MOTOR_DIR_PIN PA7  // Motor direction / 电机方向
-#define STEP_PIN     PC13 // Step / 步
-#define UART         PB1  // Software UART / 软串口
+#define EN_PIN      PA6  // Enable / 使能
+#define DIR_PIN     PA7  // Direction / 方向 (⚠️ Note: DIR_PIN redefined at line 77 for MDM)
+#define STEP_PIN    PC13 // Step / 步
+#define UART        PB1  // Software UART / 软串口
 
 // Output signals / 输出信号
 #define DUANLIAO    PB15 // Filament runout signal / 断料
@@ -74,7 +74,7 @@
 
 // Blockage detection pins / 堵料检测引脚
 #define PULSE1_PIN EXTENSION_PIN5  // Pulse input 1: receives controller pulses / 接收脉冲引脚1，接收主控脉冲
-#define DIR_PIN EXTENSION_PIN3     // Direction pin: extrude=1, retract=0 / 方向引脚,挤出1，回抽0
+#define DIR_PIN EXTENSION_PIN3     // Direction pin: extrude=1, retract=0 / 方向引脚,挤出1，回抽0 (⚠️ Redefines DIR_PIN from line 56!)
 #define PULSE2_PIN EXTENSION_PIN4  // Pulse input 2: receives MDM module pulses / 接收脉冲引脚2，接收段断料模块脉冲
 #define MDM_DPIN EXTENSION_PIN6    // MDM runout pin: has filament=1, no filament=0 / MDM断料引脚 1：有耗材 0：无耗材
 

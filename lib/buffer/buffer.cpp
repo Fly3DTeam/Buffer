@@ -302,7 +302,7 @@ void buffer_motor_init(){
   // Initialize motor driver pins / 电机驱动引脚初始化
   pinMode(EN_PIN, OUTPUT);
   pinMode(STEP_PIN, OUTPUT);
-  pinMode(MOTOR_DIR_PIN, OUTPUT);  // Motor direction pin / 电机方向引脚
+  pinMode(DIR_PIN, OUTPUT);  // Motor direction (PA7) / 电机方向
   digitalWrite(EN_PIN, LOW);      // Enable driver in hardware
 
   //电机驱动初始化
