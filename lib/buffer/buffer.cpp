@@ -122,7 +122,7 @@ void iwdg_init(void)
 
 
 
-//函数声明
+// Function declarations / 函数声明
 void key1_it_callback(void);
 void key2_it_callback(void);
 
@@ -162,7 +162,7 @@ void buffer_init(){
   delay(1000);
 
   EEPROM.get(EEPROM_ADDR_TIMEOUT, timeout);
-  // 判断读取的值是否有效（例如首次写入前是 0xFFFFFFFF 或 0）
+  // Check if read value is valid (e.g., 0xFFFFFFFF or 0 before first write) / 判断读取的值是否有效（例如首次写入前是 0xFFFFFFFF 或 0）
   if (timeout == 0xFFFFFFFF || timeout == 0) {
     timeout = DEFAULT_TIMEOUT;
     EEPROM.put(EEPROM_ADDR_TIMEOUT, timeout);
@@ -240,13 +240,13 @@ void buffer_loop()
 
 
 		}
-		// 1、读取各传感器的值
+		// 1. Read all sensor values / 1、读取各传感器的值
 		read_sensor_state();
 		if(connet_mdm_flag) Blockage_Detect();
 		motor_control();
 		USB_Serial_Analys();
 
-		// 堵料输出3s后关断
+		// Turn off blockage output after 3s / 堵料输出3s后关断
 		if (blockage_detect.blockage_flag)
 		{
 			if (millis() - blockage_inform_times > 3000)
@@ -261,7 +261,7 @@ void buffer_loop()
 }
 
 void buffer_sensor_init(){
-  //传感器初始化
+  // Initialize sensors / 传感器初始化
   pinMode(HALL1,INPUT);
   pinMode(HALL2,INPUT);
   pinMode(HALL3,INPUT);
@@ -277,13 +277,13 @@ void buffer_sensor_init(){
   attachInterrupt(KEY1,&key1_it_callback,CHANGE);
   attachInterrupt(KEY2,&key2_it_callback,CHANGE);
 
-  //耗材指示灯初始化
+  // Initialize filament indicator LEDs / 耗材指示灯初始化
   pinMode(DUANLIAO,OUTPUT);
   pinMode(ERR_LED,OUTPUT);
   pinMode(START_LED,OUTPUT);
   pinMode(DULIAO,OUTPUT);
 
-  //扩展引脚初始化
+  // Initialize extension pins / 扩展引脚初始化
   pinMode(EXTENSION_PIN1,OUTPUT);
   pinMode(EXTENSION_PIN2,OUTPUT);
 
@@ -292,7 +292,7 @@ void buffer_sensor_init(){
   digitalWrite(DULIAO,HIGH);
   digitalWrite(DUANLIAO,HIGH);
 
-  //配置为上拉输入，信号控制缓冲器，检测到对应引脚低电平，执行进料或退料动作
+  // Configure as pull-up input: signals control buffer, low level on pin triggers feed/retract / 配置为上拉输入，信号控制缓冲器，检测到对应引脚低电平，执行进料或退料动作
   pinMode(FRONT_SIGNAL_PIN,INPUT_PULLUP);
   pinMode(BACK_SIGNAL_PIN,INPUT_PULLUP);
 
@@ -305,7 +305,7 @@ void buffer_motor_init(){
   pinMode(DIR_PIN, OUTPUT);  // Motor direction (PA7) / 电机方向
   digitalWrite(EN_PIN, LOW);      // Enable driver in hardware
 
-  //电机驱动初始化
+  // Initialize motor driver / 电机驱动初始化
   driver.begin();                  // UART: Init SW UART (if selected) with default 115200 baudrate
   driver.beginSerial(9600);
   driver.I_scale_analog(false);
@@ -319,7 +319,7 @@ void buffer_motor_init(){
 }
 
 /**
-  * @brief  读取各传感器状态
+  * @brief  Read all sensor states / 读取各传感器状态
   * @param  NULL
   * @retval NULL
 **/
@@ -334,7 +334,7 @@ void read_sensor_state(void)
 }
 
 /**
-  * @brief  电机控制
+  * @brief  Motor control / 电机控制
   * @param  NULL
   * @retval NULL
 **/
@@ -343,44 +343,44 @@ void motor_control(void)
 	static uint32_t cur_times=0;
 	cur_times=millis();
 
-	//通知信号关闭
+	// Close notification signal / 通知信号关闭
 	if(inform_flag&&cur_times-inform_times>=3000){
 		inform_flag=false;
 		digitalWrite(EXTENSION_PIN2,HIGH);
 		digitalWrite(EXTENSION_PIN1,LOW);
 	}
 	
-	//按键控制电机
-	//按键1短按后松开
+	// Button control motor / 按键控制电机
+	// Button 1 released after short press / 按键1短按后松开
 	if(key1_release_flag&&millis()-key1_release_times>500){
 
 		key1_release_flag=false;
-		//短按1次后松开
+		// Released after 1 short press / 短按1次后松开
 		if(key1_press_cnt==1){
 			digitalWrite(EXTENSION_PIN2,LOW);
 			inform_times=millis();
 			inform_flag=true;
 			is_error=false;
 		}
-		else if(key1_press_cnt>=2){//短按2次或两次以上后松开
+		else if(key1_press_cnt>=2){// Released after 2 or more short presses / 短按2次或两次以上后松开
 			is_error=true;
 		}
 
 		key1_press_cnt=0;
 	}
 
- 	//按键2短按后松开
+ 	// Button 2 released after short press / 按键2短按后松开
 	if(key2_release_flag&&cur_times-key2_release_times>500){
 
 		key2_release_flag=false;
-		//短按1次后松开
+		// Released after 1 short press / 短按1次后松开
 		if(key2_press_cnt==1){
 			digitalWrite(EXTENSION_PIN1,HIGH);
 			inform_times=millis();
 			inform_flag=true;
 			is_error=false;
 		}
-		else if(key2_press_cnt>=2){//短按2次或两次以上后松开
+		else if(key2_press_cnt>=2){// Released after 2 or more short presses / 短按2次或两次以上后松开
 			is_error=true;
 		}
 		
@@ -388,12 +388,12 @@ void motor_control(void)
 
 	}	
 
-	//按键1按下后长按
+	// Button 1 long press after press / 按键1按下后长按
 	if(key1_press_flag&&cur_times-key1_press_times>=500||digitalRead(BACK_SIGNAL_PIN)==LOW)
 	{
 		
-		WRITE_EN_PIN(0);//使能
-    	driver.VACTUAL(STOP);	//停止
+		WRITE_EN_PIN(0);// Enable / 使能
+    	driver.VACTUAL(STOP);	// Stop / 停止
 		
     	driver.shaft(BACK);
     	driver.VACTUAL(VACTRUAL_VALUE);
@@ -401,34 +401,34 @@ void motor_control(void)
 			delay(1);
 			g_run_cnt++;
 			// Serial.println("key1_press_flag is true ");
-		}//等待松手
-					
+		}// Wait for release / 等待松手
+				
 
-		driver.VACTUAL(STOP);	//停止
+		driver.VACTUAL(STOP);	// Stop / 停止
 		motor_state=Stop;
 
 		is_front=false;
 		front_time=0;
 		is_error=false;
-		WRITE_EN_PIN(1);//失能
+		WRITE_EN_PIN(1);// Disable / 失能
 		is_error=true;
 
 	}
-	else if(key2_press_flag&&cur_times-key2_press_times>=500||digitalRead(FRONT_SIGNAL_PIN)==LOW)//按键2按下后长按
+	else if(key2_press_flag&&cur_times-key2_press_times>=500||digitalRead(FRONT_SIGNAL_PIN)==LOW)// Button 2 long press after press / 按键2按下后长按
 	{
 
 		WRITE_EN_PIN(0);
-		driver.VACTUAL(STOP);	//停止
+		driver.VACTUAL(STOP);	// Stop / 停止
 		
     	driver.shaft(FORWARD);
 		driver.VACTUAL(VACTRUAL_VALUE);
 		while(key2_press_flag||digitalRead(FRONT_SIGNAL_PIN)==LOW){
 			delay(1);
 			g_run_cnt++;
-		};//等待松手
-					
+		};// Wait for release / 等待松手
+				
 
-		driver.VACTUAL(STOP);	//停止
+		driver.VACTUAL(STOP);	// Stop / 停止
 		motor_state=Stop;
 
 		is_front=false;
@@ -437,18 +437,18 @@ void motor_control(void)
 		WRITE_EN_PIN(1);
 	}
 	
-	if(connet_mdm_flag){//连接了MDM断堵料模块
-		//判断耗材
+	if(connet_mdm_flag){// MDM blockage detection module connected / 连接了MDM断堵料模块
+		// Check filament / 判断耗材
 		if(digitalRead(ENDSTOP_3)&&!digitalRead(MDM_DPIN))
 		{
-			//无耗材，停止电机
-			driver.VACTUAL(STOP);	//停止
+			// No filament, stop motor / 无耗材，停止电机
+			driver.VACTUAL(STOP);	// Stop / 停止
 			motor_state=Stop;
 			
-			//断料引脚输出低电平
+			// Output low level on runout pin / 断料引脚输出低电平
 			digitalWrite(DUANLIAO,0);
 			
-			//关闭指示灯
+			// Turn off indicator LED / 关闭指示灯
 			digitalWrite(START_LED,0);
 
 			is_front=false;
@@ -457,30 +457,30 @@ void motor_control(void)
 			WRITE_EN_PIN(1);
 
 			
-			return;//无耗材，结束
+			return;// No filament, exit / 无耗材，结束
 		}
 		else if(!blockage_detect.blockage_flag){
-			//有耗材，断料引脚输出高电平
+			// Filament present, output high level on runout pin / 有耗材，断料引脚输出高电平
 			digitalWrite(DUANLIAO,1);
 			
-			//开启指示灯
+			// Turn on indicator LED / 开启指示灯
 			digitalWrite(START_LED,1);					
 
 		}
 
 	}
 	else{
-		//判断耗材
+		// Check filament / 判断耗材
 		if(digitalRead(ENDSTOP_3))
 		{
-			//无耗材，停止电机
-			driver.VACTUAL(STOP);	//停止
+			// No filament, stop motor / 无耗材，停止电机
+			driver.VACTUAL(STOP);	// Stop / 停止
 			motor_state=Stop;
 			
-			//断料引脚输出低电平
+			// Output low level on runout pin / 断料引脚输出低电平
 			digitalWrite(DUANLIAO,0);
 			
-			//关闭指示灯
+			// Turn off indicator LED / 关闭指示灯
 			digitalWrite(START_LED,0);
 
 			is_front=false;
@@ -489,112 +489,112 @@ void motor_control(void)
 			WRITE_EN_PIN(1);
 
 			
-			return;//无耗材，结束
+			return;// No filament, exit / 无耗材，结束
 		}		
 
-		//有耗材，断料引脚输出高电平
+		// Filament present, output high level on runout pin / 有耗材，断料引脚输出高电平
 		digitalWrite(DUANLIAO,1);
 		
-		//开启指示灯
+		// Turn on indicator LED / 开启指示灯
 		digitalWrite(START_LED,1);		
 	}
 
 		
 
 
-	//判断是否有错误
+	// Check for errors / 判断是否有错误
 	if(is_error){
-		//停止电机
-		driver.VACTUAL(STOP);	//停止
+		// Stop motor / 停止电机
+		driver.VACTUAL(STOP);	// Stop / 停止
 		motor_state=Stop;
 		WRITE_EN_PIN(1);
 		return ;
 	}
 
-	//缓冲器位置记录
-	if(buffer.buffer1_pos1_sensor_state)	//缓冲器位置为1，耗材往前推
+	// Buffer position tracking / 缓冲器位置记录
+	if(buffer.buffer1_pos1_sensor_state)	// Buffer position 1: push filament forward / 缓冲器位置为1，耗材往前推
 	{
-		last_motor_state=motor_state;		//记录上一次状态
+		last_motor_state=motor_state;		// Record previous state / 记录上一次状态
 		motor_state=Forward;
 		is_front=true;
 
 	}
-	else if(buffer.buffer1_pos2_sensor_state)	//缓冲器位置为2,电机停止转动
+	else if(buffer.buffer1_pos2_sensor_state)	// Buffer position 2: motor stops / 缓冲器位置为2,电机停止转动
 	{
-		last_motor_state=motor_state;		//记录上一次状态
+		last_motor_state=motor_state;		// Record previous state / 记录上一次状态
 		motor_state=Stop;
 		is_front=false;
 		front_time=0;
 	}
-	else if(buffer.buffer1_pos3_sensor_state)	//缓冲器位置为3，回退耗材
+	else if(buffer.buffer1_pos3_sensor_state)	// Buffer position 3: retract filament / 缓冲器位置为3，回退耗材
 	{
-		last_motor_state=motor_state;		//记录上一次状态
+		last_motor_state=motor_state;		// Record previous state / 记录上一次状态
 		motor_state=Back;
 		is_front=false;
 		front_time=0;
 	}
 			
-	if(motor_state==last_motor_state)//如果上次状态跟这次状态一致，则不需要再次发送控制命令,结束此次函数
+	if(motor_state==last_motor_state)// If state unchanged, no need to send control command again, exit function / 如果上次状态跟这次状态一致，则不需要再次发送控制命令,结束此次函数
 		return;
 	
 	static uint8_t write_cnt=0;
 	uint8_t retry_count=9;
 	
-	//电机控制
+	// Motor control / 电机控制
 	switch(motor_state)
 	{
-		case Forward://向前
+		case Forward:// Forward / 向前
 		{
 			WRITE_EN_PIN(0);
-			if(last_motor_state==Back)	driver.VACTUAL(STOP);//上次是后退，先停下再前进
+			if(last_motor_state==Back)	driver.VACTUAL(STOP);// Was retracting, stop first then forward / 上次是后退，先停下再前进
 			driver.shaft(FORWARD);
 			write_cnt=driver.IFCNT();
 			driver.VACTUAL(VACTRUAL_VALUE);
-			while(write_cnt==driver.IFCNT()&&retry_count--){//发送失败重发
+			while(write_cnt==driver.IFCNT()&&retry_count--){// Retry if send failed / 发送失败重发
 				driver.VACTUAL(VACTRUAL_VALUE);
 			}
 
 		}break;
-		case Stop://停止
+		case Stop:// Stop / 停止
 		{
 			write_cnt=driver.IFCNT();
 			driver.VACTUAL(STOP);
-			while(write_cnt==driver.IFCNT()&&retry_count--){//发送失败重发
+			while(write_cnt==driver.IFCNT()&&retry_count--){// Retry if send failed / 发送失败重发
 				driver.VACTUAL(STOP);
 			}	
 			WRITE_EN_PIN(1);		
 
 		}break;
-		case Back://向后
+		case Back:// Backward / 向后
 		{
 			WRITE_EN_PIN(0);
-			if(last_motor_state==Forward)	driver.VACTUAL(STOP);;//上次是前进，先停下再后退
+			if(last_motor_state==Forward)	driver.VACTUAL(STOP);;// Was forwarding, stop first then retract / 上次是前进，先停下再后退
 			driver.shaft(BACK);
 			write_cnt=driver.IFCNT();
 			driver.VACTUAL(VACTRUAL_VALUE);
-			while(write_cnt==driver.IFCNT()&&retry_count--){//发送失败重发
+			while(write_cnt==driver.IFCNT()&&retry_count--){// Retry if send failed / 发送失败重发
 				driver.VACTUAL(VACTRUAL_VALUE);
 			}				
 		}break;
 		
 	}
-	last_motor_state=motor_state;		//记录上一次状态
+	last_motor_state=motor_state;		// Record previous state / 记录上一次状态
 	
 }
 
 void timer_it_callback(){
 
-	//喂狗(每100ms喂狗一次)
+	// Feed watchdog (every 100ms) / 喂狗(每100ms喂狗一次)
 	static uint32_t i=0;
 	i++;
-	//每5秒检测g_run_cnt的值
+	// Check g_run_cnt value every 5 seconds / 每5秒检测g_run_cnt的值
 	if(i>=50)
 	{
-		//主程序存在异常
+		// Main program exception detected / 主程序存在异常
 		if(g_run_cnt == 0)
 		{
 			Serial.println("program excepiton,iwdg trigger reset cpu\r\n");
-			//等待看门狗超时触发复位
+			// Wait for watchdog timeout to trigger reset / 等待看门狗超时触发复位
 			while(1){
 				delay(1);
 			}
@@ -611,24 +611,24 @@ void timer_it_callback(){
 
 
 
-	//长时间进料出错
+	// Long feed error / 长时间进料出错
 	if (is_front)
-	{ // 如果往前推
+	{ // If pushing forward / 如果往前推
 		front_time+=100;
 		if (front_time > timeout)
-		{ // 如果超时
+		{ // If timeout / 如果超时
 			is_error = true;
 		}
 	}
 }
 
 void key1_it_callback(void){
-	if(!digitalRead(KEY1)){//下降沿
+	if(!digitalRead(KEY1)){// Falling edge / 下降沿
 		key1_press_times=millis();
 		key1_press_cnt++;
 		key1_press_flag=true;
 	}
-	else{//上升沿
+	else{// Rising edge / 上升沿
 		if(millis()-key1_press_times<=500){
 			key1_release_flag=true;
 			key1_release_times=millis();
@@ -644,12 +644,12 @@ void key1_it_callback(void){
 
 
 void key2_it_callback(void){
-	if(!digitalRead(KEY2)){//下降沿
+	if(!digitalRead(KEY2)){// Falling edge / 下降沿
 		key2_press_times=millis();
 		key2_press_cnt++;
 		key2_press_flag=true;
 	}
-	else{//上升沿
+	else{// Rising edge / 上升沿
 		if(millis()-key2_press_times<=500){
 			key2_release_flag=true;
 			key2_release_times=millis();
@@ -669,9 +669,9 @@ void Recv_MDM_Pulse_IT_Callback(void){
 }
 
 void Dir_IT_Callback(void){
-	//修改定时器计数方向
-	if(SIGNAL_COUNT_READ_DIR_IO())	SIGNAL_COUNT_UP();		//DIR高电平-配置为向上计数
-	else 	SIGNAL_COUNT_DOWN();	//DIR低电平-配置为向下计数
+	// Change timer count direction / 修改定时器计数方向
+	if(SIGNAL_COUNT_READ_DIR_IO())	SIGNAL_COUNT_UP();		// DIR high level - configure for count up / DIR高电平-配置为向上计数
+	else 	SIGNAL_COUNT_DOWN();	// DIR low level - configure for count down / DIR低电平-配置为向下计数
 }
 
 // void Buffer_S3_IT_Callback(void){
@@ -792,7 +792,7 @@ void USB_Serial_Analys(void){
 
 			}		
 			else if(strstr(serial_buf.c_str(),"clear")){
-				//重新计数
+				// Reset count / 重新计数
 				blockage_detect.actual_distance=0;
 				blockage_detect.target_distance=0;
 				blockage_detect.mdm_pulse_cnt=0;
@@ -899,32 +899,32 @@ void USB_Serial_Analys(void){
 **/
 bool Check_Connet_MDM(void){
 
-	//等待上电稳定
+	// Wait for power-on stabilization / 等待上电稳定
 	delay(1000);
 
-	//读取MDM断料引脚状态
+	// Read MDM runout pin state / 读取MDM断料引脚状态
 	pinMode(MDM_DPIN,INPUT);
 	bool mdm_state=digitalRead(MDM_DPIN);
 	// Serial.print("mdm_state:");
 	// Serial.println(mdm_state);
 
-	//配置为相反的电平拉取方向，再次读取电平，如果电平状态不变，则说明有连接，否则说明无连接
-	if(mdm_state){//高电平,配置为下拉
+	// Configure opposite pull direction, read again; if level unchanged, connected; otherwise not connected / 配置为相反的电平拉取方向，再次读取电平，如果电平状态不变，则说明有连接，否则说明无连接
+	if(mdm_state){// High level, configure as pull-down / 高电平,配置为下拉
 		pinMode(MDM_DPIN,INPUT_PULLDOWN);
 		Serial.println(digitalRead(MDM_DPIN));
-		if(digitalRead(MDM_DPIN))	return true;//电平不变,说明有连接
+		if(digitalRead(MDM_DPIN))	return true;// Level unchanged, connected / 电平不变,说明有连接
 		else 						return false;
 	}
 	else{
 		pinMode(MDM_DPIN,INPUT_PULLUP);
 		Serial.println(digitalRead(MDM_DPIN));
 		if(digitalRead(MDM_DPIN))	return false;
-		else 						return true;//电平不变,说明有连接
+		else 						return true;// Level unchanged, connected / 电平不变,说明有连接
 	}
 }
 
 /**
- * @brief  TIM_SIGNAL_PUL初始化
+ * @brief  TIM_SIGNAL_PUL initialization / TIM_SIGNAL_PUL初始化
  * @param  NULL
  * @retval NULL
  **/
@@ -1007,7 +1007,7 @@ void Signal_Dir_Init(void)
 void Pulse_Receive_Init(void){
 
 	EEPROM.get(EEPROM_ADDR_ERROR_SCALE, allow_error_scale);
-	// 判断读取的值是否有效（例如首次写入前是 0xFFFFFFFF 或 0）
+	// Check if read value is valid (e.g., 0xFFFFFFFF or 0 before first write) / 判断读取的值是否有效（例如首次写入前是 0xFFFFFFFF 或 0）
 	if (allow_error_scale == 0||isnan(allow_error_scale))
 	{
 		allow_error_scale = DEFAULT_ALLOW_ERROR_SCALE;
@@ -1023,14 +1023,14 @@ void Pulse_Receive_Init(void){
 
 
 
-	// PULSE2_PIN初始化
+	// PULSE2_PIN initialization / PULSE2_PIN初始化
 	if(connet_mdm_flag){
 		pinMode(PULSE2_PIN,INPUT);
 		attachInterrupt(PULSE2_PIN,&Recv_MDM_Pulse_IT_Callback,RISING);
 	}
 
 	EEPROM.get(EEPROM_ADDR_ENCODER_LENGTH, encoder_length);
-	// 判断读取的值是否有效（例如首次写入前是 0xFFFFFFFF 或 0）
+	// Check if read value is valid (e.g., 0xFFFFFFFF or 0 before first write) / 判断读取的值是否有效（例如首次写入前是 0xFFFFFFFF 或 0）
 	if (encoder_length == 0||isnan(encoder_length))
 	{
 		encoder_length = DEFAULT_ENCODER_LENGTH;
@@ -1045,10 +1045,10 @@ void Pulse_Receive_Init(void){
 
 
 
-	// PULSE1_PIN初始化
-	// 使用硬件定时器接收
+	// PULSE1_PIN initialization / PULSE1_PIN初始化
+	// Use hardware timer to receive / 使用硬件定时器接收
 	EEPROM.get(EEPROM_ADDR_STEPS, steps);
-	// 判断读取的值是否有效（例如首次写入前是 0xFFFFFFFF 或 0）
+	// Check if read value is valid (e.g., 0xFFFFFFFF or 0 before first write) / 判断读取的值是否有效（例如首次写入前是 0xFFFFFFFF 或 0）
 	if (steps > 51200 || timeout == 0)
 	{
 		steps = DEFAULT_STEPS;
@@ -1076,8 +1076,8 @@ void Blockage_Detect(void){
 	static uint32_t last_timer_cnt=TIM2->CNT;
 	static uint32_t last_time=0;
 
-	//500ms内每没接收到脉冲，重新计数
-	if(last_timer_cnt==TIM2->CNT){//CNT计数没变化，没有脉冲
+	// Reset count if no pulse received within 500ms / 500ms内每没接收到脉冲，重新计数
+	if(last_timer_cnt==TIM2->CNT){// CNT count unchanged, no pulse / CNT计数没变化，没有脉冲
 		if(millis()-last_time>=500){
 			blockage_detect.actual_distance=0;
 			blockage_detect.target_distance=0;
@@ -1085,18 +1085,18 @@ void Blockage_Detect(void){
 			blockage_detect.extrusion_pulse_cnt=0;
 		}
 	}
-	else{//CNT计数有变化，有脉冲，记录时间戳
+	else{// CNT count changed, pulse received, record timestamp / CNT计数有变化，有脉冲，记录时间戳
 		last_timer_cnt=TIM2->CNT;
 		last_time=millis();
 
-		//计算挤出脉冲数
+		// Calculate extrusion pulse count / 计算挤出脉冲数
 		blockage_detect.last_pulse_cnt=blockage_detect.pulse_cnt;
 		blockage_detect.pulse_cnt=TIM2->CNT;
 		blockage_detect.pulse_cnt_sub=blockage_detect.pulse_cnt-blockage_detect.last_pulse_cnt;
 		blockage_detect.extrusion_pulse_cnt+=blockage_detect.pulse_cnt_sub;
 		
 
-		//只计算挤出的距离，若 extrusion_pulse_cnt 为负，则认为是回退，不计算
+		// Only calculate extrusion distance; if extrusion_pulse_cnt is negative, consider it retraction, don't calculate / 只计算挤出的距离，若 extrusion_pulse_cnt 为负，则认为是回退，不计算
 		if(blockage_detect.extrusion_pulse_cnt<0) blockage_detect.target_distance=0;
 		else blockage_detect.target_distance=(blockage_detect.extrusion_pulse_cnt)/steps;
 
@@ -1113,16 +1113,16 @@ void Blockage_Detect(void){
 	static uint32_t detect_blockage_time=0;
 	
 	
-	//连续检测到两次堵料，则认为是堵料，否则判断为误触
-	if(!detect_blockage){//尚未检测到堵料
+	// If blockage detected twice consecutively, consider it blockage; otherwise false trigger / 连续检测到两次堵料，则认为是堵料，否则判断为误触
+	if(!detect_blockage){// Blockage not yet detected / 尚未检测到堵料
 		if(blockage_detect.target_distance!=last_target_distance){
 			// Serial.println("dir:"+String((bool)SIGNAL_COUNT_READ_DIR_IO()));
 
 			// Serial.print("target_distance:"+String(blockage_detect.target_distance));
 			// Serial.println("	actual_distance:"+String(blockage_detect.actual_distance));
 
-			//堵料判断
-			if(abs(blockage_detect.distance_error)>blockage_detect.allow_error&&blockage_detect.target_distance>=blockage_detect.allow_error){//检测得到堵料
+			// Blockage detection / 堵料判断
+			if(abs(blockage_detect.distance_error)>blockage_detect.allow_error&&blockage_detect.target_distance>=blockage_detect.allow_error){// Blockage detected / 检测得到堵料
 	
 				detect_blockage=true;
 				detect_blockage_time=millis();
@@ -1131,7 +1131,7 @@ void Blockage_Detect(void){
 				// Serial.println("	actual_distance:"+String(blockage_detect.actual_distance));
 				// Serial.println("detect over error:"+String(blockage_detect.distance_error));
 
-				//重新计数
+				// Reset count / 重新计数
 				blockage_detect.actual_distance=0;
 				blockage_detect.target_distance=0;
 				blockage_detect.mdm_pulse_cnt=0;
@@ -1142,10 +1142,10 @@ void Blockage_Detect(void){
 		}
 
 	}
-	else if(blockage_detect.target_distance>blockage_detect.allow_error){//已经检测到堵料，1s后再次检测，如果还是检测到堵料，堵料触发，否则认为是误触，清空检测标志位
+	else if(blockage_detect.target_distance>blockage_detect.allow_error){// Blockage already detected, check again after 1s; if still detected, trigger blockage; otherwise false trigger, clear detection flag / 已经检测到堵料，1s后再次检测，如果还是检测到堵料，堵料触发，否则认为是误触，清空检测标志位
 		if(millis()-detect_blockage_time>=100){
-			if(abs(blockage_detect.distance_error)>blockage_detect.allow_error){//检测得到堵料
-				//堵料触发
+			if(abs(blockage_detect.distance_error)>blockage_detect.allow_error){// Blockage detected / 检测得到堵料
+				// Blockage triggered / 堵料触发
 				// Serial.println("blockage trigger");
 				blockage_detect.blockage_flag=true;
 				blockage_inform_times=millis();
@@ -1153,14 +1153,14 @@ void Blockage_Detect(void){
 				detect_blockage=false;
 				detect_blockage_time=0;	
 
-				//重新计数
+				// Reset count / 重新计数
 				blockage_detect.actual_distance=0;
 				blockage_detect.target_distance=0;
 				blockage_detect.mdm_pulse_cnt=0;
 				blockage_detect.extrusion_pulse_cnt=0;				
 			}
-			else{//没有检测到堵料，认为是误触
-				//清空检测标志位
+			else{// No blockage detected, consider false trigger / 没有检测到堵料，认为是误触
+				// Clear detection flag / 清空检测标志位
 				detect_blockage=false;
 				detect_blockage_time=0;
 			}
@@ -1178,13 +1178,13 @@ float fastAtof(const char *s) {
     if (*s == '-') { sign = -1; s++; }
     else if (*s == '+') { s++; }
 
-    // 整数部分
+    // Integer part / 整数部分
     while (*s >= '0' && *s <= '9') {
         val = val * 10.0f + (*s - '0');
         s++;
     }
 
-    // 小数部分
+    // Decimal part / 小数部分
     if (*s == '.') {
         s++;
         float frac = 1.0f;
