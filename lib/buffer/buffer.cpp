@@ -4,22 +4,30 @@
   * @author  lijihu
   * @version V1.0.0
   * @date    2025/05/10
-  * @brief   实现缓冲器功能
-			  *缓冲器说明
-				光感：遮挡1，不遮挡0；
-				耗材开关：有耗材0，无耗材1；
-				按键：按下0，松开1；
-
-				引脚：
-				HALL1 --> PB2 (光感3)
-				HALL2 --> PB3 (光感2)
-				HALL3 --> PB4 (光感1)
-				ENDSTOP_3 --> PB7(耗材开关)
-				KEY1 --> PB13(后退)	
-				KEY2 --> PB12(前进)
+  * @brief   Buffer functionality implementation
+  *          实现缓冲器功能
+  *
+  * Buffer description / 缓冲器说明:
+  *   Optical sensors: Blocked = 1, Unblocked = 0
+  *   光感：遮挡1，不遮挡0
+  *   
+  *   Filament switch: Filament present = 0, No filament = 1
+  *   耗材开关：有耗材0，无耗材1
+  *   
+  *   Buttons: Pressed = 0, Released = 1
+  *   按键：按下0，松开1
+  *
+  * Pin assignments / 引脚分配:
+  *   HALL1     --> PB2  (Optical sensor 3 / 光感3)
+  *   HALL2     --> PB3  (Optical sensor 2 / 光感2)
+  *   HALL3     --> PB4  (Optical sensor 1 / 光感1)
+  *   ENDSTOP_3 --> PB7  (Filament switch / 耗材开关)
+  *   KEY1      --> PB13 (Reverse / 后退)
+  *   KEY2      --> PB12 (Forward / 前进)
   *
   * @note    
   ***************************************************************************************
+  * Copyright 2025 xxx@126.com
   * 版权声明 COPYRIGHT 2025 xxx@126.com
   ***************************************************************************************
 **/
@@ -27,85 +35,88 @@
 
 #include "buffer.h"
 
-//GPIO输入
-#define SIGNAL_COUNT_READ_DIR_IO()	(SIGNAL_COUNT_DIR_GPIO_Port -> IDR & SIGNAL_COUNT_DIR_Pin)
-//TIM输入
-#define SIGNAL_COUNT_READ_COUNT()		(SIGNAL_COUNT_Get_TIM -> CNT)
-//TIM输出
-#define SIGNAL_COUNT_UP()						(SIGNAL_COUNT_Get_TIM -> CR1 &= ~(TIM_CR1_DIR))
-#define SIGNAL_COUNT_DOWN()					(SIGNAL_COUNT_Get_TIM -> CR1 |=  (TIM_CR1_DIR))
+// GPIO input macros / GPIO输入宏
+#define SIGNAL_COUNT_READ_DIR_IO()   (SIGNAL_COUNT_DIR_GPIO_Port -> IDR & SIGNAL_COUNT_DIR_Pin)  // Read direction signal / 读取方向信号
+// Timer input macros / 定时器输入宏
+#define SIGNAL_COUNT_READ_COUNT()    (SIGNAL_COUNT_Get_TIM -> CNT)  // Read timer count / 读取定时器计数
+// Timer output macros / 定时器输出宏
+#define SIGNAL_COUNT_UP()            (SIGNAL_COUNT_Get_TIM -> CR1 &= ~(TIM_CR1_DIR))  // Count up / 向上计数
+#define SIGNAL_COUNT_DOWN()          (SIGNAL_COUNT_Get_TIM -> CR1 |=  (TIM_CR1_DIR))  // Count down / 向下计数
 
 
+// Global objects and variables / 全局对象和变量
+TMC2209Stepper driver(UART, UART, R_SENSE, DRIVER_ADDRESS);  // TMC2209 stepper driver / TMC2209步进驱动
+Buffer buffer = {0};                 // Sensor states storage / 存储传感器状态
+Motor_State motor_state = Stop;      // Current motor state / 当前电机状态
+static Motor_State last_motor_state = Stop;  // Previous motor state / 上次电机状态
+
+// State flags / 状态标志
+bool is_front = false;               // Forward motion flag / 前进标志位
+uint32_t front_time = 0;             // Forward motion time counter / 前进时间
+const uint32_t DEFAULT_TIMEOUT = 60000;  // Default timeout: 60 seconds / 默认超时：60秒
+uint32_t timeout = 60000;            // Timeout duration in milliseconds / 超时时间，单位：ms
+bool is_error = false;               // Error flag: true if motor runs forward continuously for 60s / 错误标志位，如果连续60s推送耗材没停过，则认为错误
+String serial_buf;                   // Serial command buffer / 串口命令缓冲区
+
+// Timers / 定时器
+static HardwareTimer timer(TIM6);   // Hardware timer for error timeout / 超时出错定时器
+TIM_HandleTypeDef htim2;            // Hardware timer for pulse reception / 硬件定时器接收脉冲
+
+// Button state tracking / 按键状态跟踪
+bool key1_press_flag = false;        // Key1 press detected / 按键1按下标志
+bool key2_press_flag = false;        // Key2 press detected / 按键2按下标志
+bool key1_release_flag = false;      // Key1 release detected / 按键1释放标志
+bool key2_release_flag = false;      // Key2 release detected / 按键2释放标志
+uint32_t key1_press_times = 0;       // Key1 press timestamp / 按键1按下时间
+uint32_t key2_press_times = 0;       // Key2 press timestamp / 按键2按下时间
+uint32_t key1_release_times = 0;     // Key1 release timestamp / 按键1释放时间
+uint32_t key2_release_times = 0;     // Key2 release timestamp / 按键2释放时间
+uint8_t key1_press_cnt = 0;          // Key1 press counter / 按键1按下计数
+uint8_t key2_press_cnt = 0;          // Key2 press counter / 按键2按下计数
+
+// Notification flags / 通知标志
+uint32_t inform_flag = false;        // Inform flag / 通知标志
+uint32_t inform_times = 0;           // Inform timestamp / 通知时间
+
+// MDM blockage detection parameters / MDM堵料检测参数
+const uint32_t DEFAULT_STEPS = 916;  // Default steps per mm / 默认每毫米脉冲数
+uint32_t steps = 916;                // Steps per mm / 每毫米脉冲数
+BlockageDetect blockage_detect = {0}; // Blockage detection structure / 堵料检测结构体
+bool connet_mdm_flag = false;        // MDM module connected flag / MDM模块连接标志
+uint32_t blockage_inform_times = 0;  // Blockage notification timestamp / 堵料通知时间
+
+const float DEFAULT_ENCODER_LENGTH = 1.73;  // Default encoder length / 默认编码器长度
+float encoder_length = 1.73;         // MDM module: filament movement per pulse (mm/pulse) / MDM段堵料模块每脉冲对应的线材移动量（mm/pulse）
+
+const float DEFAULT_ALLOW_ERROR_SCALE = 2;  // Default error scale / 默认允许误差比例
+float allow_error_scale = 2;         // Allowed error scale / 允许误差比例
+
+// EEPROM memory addresses / EEPROM内存地址
+const int EEPROM_ADDR_TIMEOUT = 0;        // Timeout storage address / 超时值存储地址
+const int EEPROM_ADDR_STEPS = 4;          // Steps storage address / 步数存储地址
+const int EEPROM_ADDR_ENCODER_LENGTH = 8; // Encoder length storage address / 编码器长度存储地址
+const int EEPROM_ADDR_ERROR_SCALE = 12;   // Error scale storage address / 误差比例存储地址
+const int EEPROM_ADDR_SPEED = 16;         // Speed storage address / 速度存储地址
 
 
-TMC2209Stepper driver(UART, UART, R_SENSE, DRIVER_ADDRESS);
-Buffer buffer={0};//存储个传感器状态
-Motor_State motor_state=Stop;
-static Motor_State last_motor_state=Stop;
-
-bool is_front=false;//前进标志位
-uint32_t front_time=0;//前进时间
-const uint32_t DEFAULT_TIMEOUT = 60000;
-uint32_t timeout=60000;//超时时间，单位：ms;
-bool is_error=false;//错误标志位，如果连续60s推送耗材没停过，则认为错误
-String serial_buf;
-
-static HardwareTimer timer(TIM6);//超时出错
-TIM_HandleTypeDef htim2;//硬件定时器接收脉冲
-
-bool key1_press_flag=false;
-bool key2_press_flag=false;
-bool key1_release_flag=false;
-bool key2_release_flag=false;
-uint32_t key1_press_times=0;
-uint32_t key2_press_times=0;
-uint32_t key1_release_times=0;
-uint32_t key2_release_times=0;
-uint8_t key1_press_cnt=0;
-uint8_t key2_press_cnt=0;
-
-uint32_t inform_flag=false;
-uint32_t inform_times=0;
-
-const uint32_t DEFAULT_STEPS = 916;
-uint32_t steps=916;//每毫米脉冲数;
-BlockageDetect blockage_detect={0};//堵料检测结构体
-bool connet_mdm_flag=false;
-uint32_t blockage_inform_times=0;
-
-
-const float DEFAULT_ENCODER_LENGTH = 1.73;
-float encoder_length=1.73;//MDM段堵料模块每脉冲对应的线材移动量（mm/pulse）
-
-
-const float DEFAULT_ALLOW_ERROR_SCALE = 2;
-float allow_error_scale=2;//允许误差比例
-
-const int EEPROM_ADDR_TIMEOUT = 0;
-const int EEPROM_ADDR_STEPS = 4;
-const int EEPROM_ADDR_ENCODER_LENGTH = 8;
-const int EEPROM_ADDR_ERROR_SCALE = 12;
-const int EEPROM_ADDR_SPEED = 16;
-
-
-//独立看门狗
+// Independent watchdog / 独立看门狗
 #include "stm32f0xx_hal_iwdg.h"
 
-IWDG_HandleTypeDef hiwdg;
-static volatile uint32_t g_run_cnt=0;
+IWDG_HandleTypeDef hiwdg;            // Watchdog handle / 看门狗句柄
+static volatile uint32_t g_run_cnt = 0;  // Run counter / 运行计数器
 
 void iwdg_init(void)
 {
-	// 1. 使能写访问
+	// 1. Enable write access / 使能写访问
 	IWDG->KR = 0x5555;     
 
-	// 2. 设置分频
+	// 2. Set prescaler / 设置分频
 	IWDG->PR = IWDG_PRESCALER_256;  
 
-	// 3. 设置重载值
-	IWDG->RLR = 125*10-1;  //超时时间2s
+	// 3. Set reload value / 设置重载值
+	IWDG->RLR = 125*10-1;  // Timeout: 2 seconds / 超时时间2s
 
-	// 4. 启动 IWDG
+	// 4. Start IWDG / 启动 IWDG
 	IWDG->KR = 0xCCCC;     	
 }
 
@@ -288,10 +299,10 @@ void buffer_sensor_init(){
 }
 
 void buffer_motor_init(){
-  //电机驱动引脚初始化
+  // Initialize motor driver pins / 电机驱动引脚初始化
   pinMode(EN_PIN, OUTPUT);
   pinMode(STEP_PIN, OUTPUT);
-  pinMode(DIR_PIN, OUTPUT);
+  pinMode(MOTOR_DIR_PIN, OUTPUT);  // Motor direction pin / 电机方向引脚
   digitalWrite(EN_PIN, LOW);      // Enable driver in hardware
 
   //电机驱动初始化
