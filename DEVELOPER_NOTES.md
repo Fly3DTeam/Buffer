@@ -55,6 +55,67 @@ lib/buffer/buffer.h:56: note: this is the location of the previous definition
 
 ---
 
+## 📦 **Missing GitHub Releases**
+
+### **Issue:**
+Git tags exist (`buffer_v1.1.0`, `buffer_v1.1.1`, `buffer_v1.1.3`) but no GitHub Releases have been created.
+
+### **Current State:**
+- ✅ Git tags are present and properly named
+- ❌ No GitHub Releases page entries
+- ❌ No release notes or changelog
+- ❌ Users can't easily see what changed between versions
+- ❌ No downloadable binaries attached to releases
+
+### **Impact:**
+- Users can't easily find release notes or understand what changed
+- No clear way to download specific firmware versions
+- Harder for users to report issues for specific versions
+- Missing opportunity to highlight new features (e.g., MDM support in v1.1.x)
+
+### **Recommendation:**
+1. **Create GitHub Releases** for existing tags:
+   - Go to: `https://github.com/Fly3DTeam/Buffer/releases`
+   - Click "Draft a new release"
+   - Select tag: `buffer_v1.1.3` (and repeat for v1.1.1, v1.1.0)
+   - Add release title: "Buffer Firmware v1.1.3"
+   - Add release notes describing:
+     - New features (e.g., MDM support, speed command, watchdog timer)
+     - Bug fixes
+     - Breaking changes (if any)
+     - Upgrade instructions
+   - Attach compiled `.bin` files for easy download
+
+2. **Consider creating a CHANGELOG.md**:
+   - Document changes between versions
+   - Keep it updated with each release
+   - Makes it easier to generate release notes
+
+3. **Future releases**: Create a release for each new version tag
+
+### **Example Release Notes Structure:**
+```markdown
+## Buffer Firmware v1.1.3
+
+### New Features
+- MDM (blockage detection module) support
+- Runtime speed adjustment via serial command
+- Watchdog timer for improved stability
+
+### Improvements
+- Increased default timeout to 60 seconds
+- Enhanced error handling
+
+### Bug Fixes
+- [List any fixes]
+
+### Installation
+1. Download `buffer_v1.1.3.bin`
+2. Flash using DFU mode (see README)
+```
+
+---
+
 ## ✅ **Translation Status**
 
 ### **Completed:**
@@ -68,6 +129,6 @@ lib/buffer/buffer.h:56: note: this is the location of the previous definition
 ---
 
 **Date**: 2024-12-05  
-**Branch**: deployed/custom-buffer-v2  
+**Branch**: translation-with-user-guide  
 **Translator**: Code review assistant
 
