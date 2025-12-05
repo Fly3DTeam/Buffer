@@ -5,6 +5,26 @@ This file contains notes for the original developer about potential issues found
 
 ---
 
+## 📌 **Version Number Mismatch**
+
+### **Issue:**
+File headers show `@version V1.0.0` but code is actually v1.1.x
+
+**Files affected:**
+- `lib/buffer/buffer.h` (line 5): Shows V1.0.0
+- `lib/buffer/buffer.cpp` (line 5): Shows V1.0.0
+
+**Evidence:**
+- Commit 17f4973: "version updating" added 991 lines of v1.1.x features
+- Commit 34e702f: Merged from "dev-1.1.x" branch
+- Factory binary: `buffer_v1.1.3.bin`
+- Code has v1.1.x features: speed command, MDM support, watchdog, etc.
+
+**Recommendation:**
+Update version tags to reflect actual version (probably V1.1.3 or V1.1.x)
+
+---
+
 ## ⚠️ **Compiler Warning: DIR_PIN Redefinition**
 
 ### **Issue:**
