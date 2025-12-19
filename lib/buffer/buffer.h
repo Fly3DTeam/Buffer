@@ -93,10 +93,11 @@ static int32_t SPEED=260;  //转速(单位：r/min)
 static int32_t VACTRUAL_VALUE=(uint32_t)(SPEED*Move_Divide_NUM*200/60/0.715) ;  //VACTUAL寄存器值
 
 #define STOP 0				//停止
-#define I_CURRENT (500)		//电流
 #define WRITE_EN_PIN(x) digitalWrite(EN_PIN,x)//使能EN引脚
 #define FORWARD		1//耗材方向
 #define BACK		0
+
+#define DUANLIAO_OUT_STATE 1 //断料输出状 0
 
 #define DEBUG 0
 

@@ -81,11 +81,15 @@ float encoder_length=1.73;//MDM段堵料模块每脉冲对应的线材移动量�
 const float DEFAULT_ALLOW_ERROR_SCALE = 2;
 float allow_error_scale=2;//允许误差比例
 
+uint32_t I_CURRENT = 500;		//电流
+
 const int EEPROM_ADDR_TIMEOUT = 0;
 const int EEPROM_ADDR_STEPS = 4;
 const int EEPROM_ADDR_ENCODER_LENGTH = 8;
 const int EEPROM_ADDR_ERROR_SCALE = 12;
 const int EEPROM_ADDR_SPEED = 16;
+const int EEPROM_ADDR_I_CURRENT = 20;
+
 
 
 //独立看门狗
@@ -288,6 +292,24 @@ void buffer_sensor_init(){
 }
 
 void buffer_motor_init(){
+
+	//读eeprom获取电流值
+	EEPROM.get(EEPROM_ADDR_I_CURRENT, I_CURRENT);
+	// 判断读取的值是否有效（例如首次写入前是 0xFFFFFFFF 或 0）
+	if (I_CURRENT == 0||isnan(I_CURRENT)||I_CURRENT>3000)
+	{
+		I_CURRENT = 500;
+		EEPROM.put(EEPROM_ADDR_I_CURRENT, I_CURRENT);
+		Serial.println("EEPROM is empty");
+	}
+	else
+	{
+		Serial.print("I_CURRENT: ");
+		Serial.println(I_CURRENT);
+	}
+
+
+
   //电机驱动引脚初始化
   pinMode(EN_PIN, OUTPUT);
   pinMode(STEP_PIN, OUTPUT);
@@ -434,8 +456,8 @@ void motor_control(void)
 			driver.VACTUAL(STOP);	//停止
 			motor_state=Stop;
 			
-			//断料引脚输出低电平
-			digitalWrite(DUANLIAO,0);
+			//断料引脚输出断料状态
+			digitalWrite(DUANLIAO,DUANLIAO_OUT_STATE);
 			
 			//关闭指示灯
 			digitalWrite(START_LED,0);
@@ -449,8 +471,8 @@ void motor_control(void)
 			return;//无耗材，结束
 		}
 		else if(!blockage_detect.blockage_flag){
-			//有耗材，断料引脚输出高电平
-			digitalWrite(DUANLIAO,1);
+			//有耗材，断料引脚输出非断料状态
+			digitalWrite(DUANLIAO,!DUANLIAO_OUT_STATE);
 			
 			//开启指示灯
 			digitalWrite(START_LED,1);					
@@ -467,7 +489,7 @@ void motor_control(void)
 			motor_state=Stop;
 			
 			//断料引脚输出低电平
-			digitalWrite(DUANLIAO,0);
+			digitalWrite(DUANLIAO,DUANLIAO_OUT_STATE);
 			
 			//关闭指示灯
 			digitalWrite(START_LED,0);
@@ -481,8 +503,8 @@ void motor_control(void)
 			return;//无耗材，结束
 		}		
 
-		//有耗材，断料引脚输出高电平
-		digitalWrite(DUANLIAO,1);
+		//有耗材，断料引脚输出非断料状态
+		digitalWrite(DUANLIAO,!DUANLIAO_OUT_STATE);
 		
 		//开启指示灯
 		digitalWrite(START_LED,1);		
@@ -856,6 +878,27 @@ void USB_Serial_Analys(void){
 				Serial.print("set speed  succeed! speed=");
 				Serial.println(SPEED);
 			}			
+			else if(strstr(serial_buf.c_str(),"I")){
+				int index=serial_buf.indexOf(" ");
+				if(index==-1){
+					serial_buf="";
+					Serial.println("I_CURRENT="+String(I_CURRENT));
+					return ;
+				}
+				serial_buf=serial_buf.substring(index+1);
+				// float num = serial_buf.toFloat();
+				int32_t num = atoi(serial_buf.c_str());
+				if(num<0||num>3000){
+					serial_buf="";
+					Serial.println("Error: Invalid I_CURRENT  value,range:0-3000mA");
+					return ;
+				}
+				I_CURRENT=num;
+				EEPROM.put(EEPROM_ADDR_I_CURRENT, I_CURRENT);
+				serial_buf="";
+				Serial.print("set I_CURRENT  succeed! I_CURRENT=");
+				Serial.println(I_CURRENT);
+			}				
 
 
 			else{
@@ -870,6 +913,7 @@ void USB_Serial_Analys(void){
 				Serial.print("|     show all info : <info CRLF>             |\n");
 				Serial.print("|     set scale: <scale nnn CRLF>             |\n");
 				Serial.print("|     set speed(r/min): <speed nnn CRLF>      |\n");
+				Serial.print("|     set I_CURRENT(A): <I nnn CRLF>          |\n");
 				Serial.print("+-----------------------------------------------+\n\n");
 			}
 			serial_buf="";
