@@ -89,6 +89,7 @@ const int EEPROM_ADDR_ENCODER_LENGTH = 8;
 const int EEPROM_ADDR_ERROR_SCALE = 12;
 const int EEPROM_ADDR_SPEED = 16;
 const int EEPROM_ADDR_I_CURRENT = 20;
+const int EEPROM_ADDR_ENDSTOP_OUT = 24;
 
 
 
@@ -97,6 +98,8 @@ const int EEPROM_ADDR_I_CURRENT = 20;
 
 IWDG_HandleTypeDef hiwdg;
 static volatile uint32_t g_run_cnt=0;
+bool DUANLIAO_OUT_STATE = 0; //断料输出状 0
+Buffer_Parameter buffer_para;
 
 void iwdg_init(void)
 {
@@ -132,6 +135,21 @@ void Signal_Dir_Init(void);
 // void Buffer_S2_IT_Callback(void);
 // void Buffer_S1_IT_Callback(void);
 
+void buffer_parameter_init(Buffer_Parameter &buffer_para){
+	EEPROM.get(0, buffer_para);
+	if(buffer_para.magic_number!=0x55AA){
+		buffer_para=Buffer_Parameter{DEFAULT_TIMEOUT,DEFAULT_STEPS,DEFAULT_ENCODER_LENGTH,DEFAULT_ALLOW_ERROR_SCALE,260,I_CURRENT,DUANLIAO_OUT_STATE,0x55AA};
+		EEPROM.put(0, buffer_para);
+	}
+	timeout=buffer_para.timeout;
+	steps=buffer_para.steps;
+	encoder_length=buffer_para.encoder_length;
+	allow_error_scale=buffer_para.allow_error_scale;
+	SPEED=buffer_para.SPEED;
+	I_CURRENT=buffer_para.I_CURRENT;
+	DUANLIAO_OUT_STATE=buffer_para.DUANLIAO_OUT_STATE;
+}
+
 void buffer_init(){
 
 	NVIC_SetPriority(TIM6_DAC_IRQn,0);//超时出错，独立看门狗
@@ -148,27 +166,13 @@ void buffer_init(){
 		
 	}
 
+  buffer_parameter_init(buffer_para);
   Pulse_Receive_Init();
   buffer_sensor_init();
   buffer_motor_init();
   Signal_Dir_Init();
   delay(1000);
 
-  EEPROM.get(EEPROM_ADDR_TIMEOUT, timeout);
-  // 判断读取的值是否有效（例如首次写入前是 0xFFFFFFFF 或 0）
-  if (timeout == 0xFFFFFFFF || timeout == 0) {
-    timeout = DEFAULT_TIMEOUT;
-    EEPROM.put(EEPROM_ADDR_TIMEOUT, timeout);
-    // Serial.println("EEPROM is empty");
-  } else {
-    // Serial.print("read timeout: ");
-    // Serial.println(timeout);
-  }
-
-  EEPROM.get(EEPROM_ADDR_SPEED, SPEED);
-  if (SPEED < 0 || SPEED > 1000) {
-    SPEED=260;
-  }
   VACTRUAL_VALUE=(uint32_t)(SPEED*Move_Divide_NUM*200/60/0.715) ;  //VACTUAL寄存器值
 
 
@@ -292,23 +296,6 @@ void buffer_sensor_init(){
 }
 
 void buffer_motor_init(){
-
-	//读eeprom获取电流值
-	EEPROM.get(EEPROM_ADDR_I_CURRENT, I_CURRENT);
-	// 判断读取的值是否有效（例如首次写入前是 0xFFFFFFFF 或 0）
-	if (I_CURRENT == 0||isnan(I_CURRENT)||I_CURRENT>3000)
-	{
-		I_CURRENT = 500;
-		EEPROM.put(EEPROM_ADDR_I_CURRENT, I_CURRENT);
-		Serial.println("EEPROM is empty");
-	}
-	else
-	{
-		Serial.print("I_CURRENT: ");
-		Serial.println(I_CURRENT);
-	}
-
-
 
   //电机驱动引脚初始化
   pinMode(EN_PIN, OUTPUT);
@@ -772,8 +759,9 @@ void USB_Serial_Analys(void){
 					serial_buf="";
 					Serial.println("Error: Invalid timeout value.");
 				}
+				buffer_para.timeout=num;
 				timeout=num;
-				EEPROM.put(EEPROM_ADDR_TIMEOUT, timeout);
+				EEPROM.put(0, buffer_para);
 				serial_buf="";
 				Serial.print("set timeout succeed! timeout=");
 				Serial.println(timeout);
@@ -791,8 +779,9 @@ void USB_Serial_Analys(void){
 					serial_buf="";
 					Serial.println("Error: Invalid steps value.");
 				}
+				buffer_para.steps=num;
 				steps=num;
-				EEPROM.put(EEPROM_ADDR_STEPS, steps);
+				EEPROM.put(0, buffer_para);
 				serial_buf="";
 				Serial.print("set steps succeed! steps=");
 				Serial.println(steps);
@@ -822,8 +811,9 @@ void USB_Serial_Analys(void){
 					serial_buf="";
 					Serial.println("Error: Invalid encoder length value.");
 				}
+				buffer_para.encoder_length=num;
 				encoder_length=num;
-				EEPROM.put(EEPROM_ADDR_ENCODER_LENGTH, encoder_length);
+				EEPROM.put(0, buffer_para);
 				serial_buf="";
 				blockage_detect.allow_error = encoder_length*allow_error_scale;
 				Serial.print("set encoder length succeed! encoder_length=");
@@ -835,6 +825,7 @@ void USB_Serial_Analys(void){
 				Serial.println("steps="+String(steps));
 				Serial.println("allow_error_scale="+String(allow_error_scale));
 				Serial.println("allow_error="+String(blockage_detect.allow_error));
+				Serial.println("DUANLIAO_OUT_STATE="+String(buffer_para.DUANLIAO_OUT_STATE));
 			}			
 			else if(strstr(serial_buf.c_str(),"scale")){
 				int index=serial_buf.indexOf(" ");
@@ -849,8 +840,9 @@ void USB_Serial_Analys(void){
 					serial_buf="";
 					Serial.println("Error: Invalid scale length value.");
 				}
+				buffer_para.allow_error_scale=num;
 				allow_error_scale=num;
-				EEPROM.put(EEPROM_ADDR_ERROR_SCALE, allow_error_scale);
+				EEPROM.put(0, buffer_para);
 				serial_buf="";
 				blockage_detect.allow_error = encoder_length*allow_error_scale;
 				Serial.print("set scale length succeed! allow_error_scale=");
@@ -871,9 +863,10 @@ void USB_Serial_Analys(void){
 					serial_buf="";
 					Serial.println("Error: Invalid speed  value.");
 				}
+				buffer_para.SPEED=num;
 				SPEED=num;
 				VACTRUAL_VALUE=(uint32_t)(SPEED*Move_Divide_NUM*200/60/0.715) ;  //VACTUAL寄存器值
-				EEPROM.put(EEPROM_ADDR_SPEED, SPEED);
+				EEPROM.put(0, buffer_para);
 				serial_buf="";
 				Serial.print("set speed  succeed! speed=");
 				Serial.println(SPEED);
@@ -893,12 +886,31 @@ void USB_Serial_Analys(void){
 					Serial.println("Error: Invalid I_CURRENT  value,range:0-3000mA");
 					return ;
 				}
+				buffer_para.I_CURRENT=num;
 				I_CURRENT=num;
-				EEPROM.put(EEPROM_ADDR_I_CURRENT, I_CURRENT);
+				EEPROM.put(0, buffer_para);
 				serial_buf="";
 				Serial.print("set I_CURRENT  succeed! I_CURRENT=");
 				Serial.println(I_CURRENT);
-			}				
+			}
+
+			else if(strstr(serial_buf.c_str(),"out")){
+				int index=serial_buf.indexOf(" ");
+				if(index==-1){
+					serial_buf="";
+					Serial.println("DUANLIAO_OUT_STATE="+String(buffer_para.DUANLIAO_OUT_STATE));
+					return ;
+				}
+				serial_buf=serial_buf.substring(index+1);
+				bool state = atoi(serial_buf.c_str());
+				buffer_para.DUANLIAO_OUT_STATE=state;
+				DUANLIAO_OUT_STATE=state;
+				EEPROM.put(0, buffer_para);
+				serial_buf="";
+				Serial.print("set DUANLIAO_OUT_STATE  succeed! DUANLIAO_OUT_STATE=");
+				Serial.println(DUANLIAO_OUT_STATE);
+			}		
+
 
 
 			else{
@@ -913,7 +925,8 @@ void USB_Serial_Analys(void){
 				Serial.print("|     show all info : <info CRLF>             |\n");
 				Serial.print("|     set scale: <scale nnn CRLF>             |\n");
 				Serial.print("|     set speed(r/min): <speed nnn CRLF>      |\n");
-				Serial.print("|     set I_CURRENT(A): <I nnn CRLF>          |\n");
+				// Serial.print("|     set I_CURRENT(mA): <I nnn CRLF>          |\n");
+				Serial.print("|     endstop out: <out n>                    |\n");
 				Serial.print("+-----------------------------------------------+\n\n");
 			}
 			serial_buf="";
@@ -1027,8 +1040,8 @@ void REIN_TIM_SIGNAL_COUNT_DeInit(void)
 */
 void Signal_Dir_Init(void)
 {
-	pinMode(DIR_PIN,INPUT);
-	attachInterrupt(DIR_PIN,&Dir_IT_Callback,CHANGE);
+	pinMode(SIG_DIR_PIN,INPUT);
+	attachInterrupt(SIG_DIR_PIN,&Dir_IT_Callback,CHANGE);
 }
 
 
@@ -1039,65 +1052,12 @@ void Signal_Dir_Init(void)
 **/
 void Pulse_Receive_Init(void){
 
-	EEPROM.get(EEPROM_ADDR_ERROR_SCALE, allow_error_scale);
-	// 判断读取的值是否有效（例如首次写入前是 0xFFFFFFFF 或 0）
-	if (allow_error_scale == 0||isnan(allow_error_scale))
-	{
-		allow_error_scale = DEFAULT_ALLOW_ERROR_SCALE;
-		EEPROM.put(EEPROM_ADDR_ERROR_SCALE, allow_error_scale);
-		Serial.println("EEPROM is empty");
-	}
-	else
-	{
-		Serial.print("read allow_error_scale: ");
-		Serial.println(allow_error_scale);
-	}
-
-
-
-
 	// PULSE2_PIN初始化
 	if(connet_mdm_flag){
 		pinMode(PULSE2_PIN,INPUT);
 		attachInterrupt(PULSE2_PIN,&Recv_MDM_Pulse_IT_Callback,RISING);
-	}
-
-	EEPROM.get(EEPROM_ADDR_ENCODER_LENGTH, encoder_length);
-	// 判断读取的值是否有效（例如首次写入前是 0xFFFFFFFF 或 0）
-	if (encoder_length == 0||isnan(encoder_length))
-	{
-		encoder_length = DEFAULT_ENCODER_LENGTH;
-		EEPROM.put(EEPROM_ADDR_ENCODER_LENGTH, encoder_length);
-		Serial.println("EEPROM is empty");
-	}
-	else
-	{
-		Serial.print("read encoder_length: ");
-		Serial.println(encoder_length);
-	}
-
-
-
-	// PULSE1_PIN初始化
-	// 使用硬件定时器接收
-	EEPROM.get(EEPROM_ADDR_STEPS, steps);
-	// 判断读取的值是否有效（例如首次写入前是 0xFFFFFFFF 或 0）
-	if (steps > 51200 || timeout == 0)
-	{
-		steps = DEFAULT_STEPS;
-		EEPROM.put(EEPROM_ADDR_STEPS, steps);
-		Serial.println("EEPROM is empty");
-	}
-	else
-	{
-		Serial.print("read steps: ");
-		Serial.println(steps);
-	}
-	
-	if(connet_mdm_flag){
 		REIN_TIM_SIGNAL_COUNT_Init();
 	}
-	
 
 	blockage_detect.allow_error = encoder_length*allow_error_scale;
 }
