@@ -60,7 +60,7 @@
 
 //堵料检测
 #define PULSE1_PIN EXTENSION_PIN5  	//接收脉冲引脚1，接收主控脉冲
-#define DIR_PIN EXTENSION_PIN3	//方向引脚,挤出1，回抽0
+#define SIG_DIR_PIN EXTENSION_PIN3	//方向引脚,挤出1，回抽0
 #define PULSE2_PIN EXTENSION_PIN4 	//接收脉冲引脚2，接收段断料模块脉冲
 #define MDM_DPIN EXTENSION_PIN6 	//MDM断料引脚 1：有耗材 0：无耗材
 
@@ -93,10 +93,10 @@ static int32_t SPEED=260;  //转速(单位：r/min)
 static int32_t VACTRUAL_VALUE=(uint32_t)(SPEED*Move_Divide_NUM*200/60/0.715) ;  //VACTUAL寄存器值
 
 #define STOP 0				//停止
-#define I_CURRENT (500)		//电流
 #define WRITE_EN_PIN(x) digitalWrite(EN_PIN,x)//使能EN引脚
 #define FORWARD		1//耗材方向
 #define BACK		0
+
 
 #define DEBUG 0
 
@@ -138,6 +138,17 @@ typedef struct BlockageDetect
 	float encoder_length; //编码器长度
 
 }BlockageDetect;
+
+struct Buffer_Parameter{
+	uint32_t timeout;
+	uint32_t steps;
+	float encoder_length;
+	float allow_error_scale;
+	int32_t SPEED;
+	uint32_t I_CURRENT;
+	bool DUANLIAO_OUT_STATE;
+	uint16_t magic_number;
+};
 
 extern void buffer_sensor_init();
 extern void buffer_motor_init();
