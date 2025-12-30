@@ -26,6 +26,7 @@
 
 
 #include "buffer.h"
+#define VERSION "1.1.5"
 
 //GPIO输入
 #define SIGNAL_COUNT_READ_DIR_IO()	(SIGNAL_COUNT_DIR_GPIO_Port -> IDR & SIGNAL_COUNT_DIR_Pin)
@@ -909,7 +910,10 @@ void USB_Serial_Analys(void){
 				serial_buf="";
 				Serial.print("set DUANLIAO_OUT_STATE  succeed! DUANLIAO_OUT_STATE=");
 				Serial.println(DUANLIAO_OUT_STATE);
-			}		
+			}
+			else if(strstr(serial_buf.c_str(),"version")){
+				Serial.println("version: "+String(VERSION));
+			}
 
 
 
@@ -925,8 +929,9 @@ void USB_Serial_Analys(void){
 				Serial.print("|     show all info : <info CRLF>             |\n");
 				Serial.print("|     set scale: <scale nnn CRLF>             |\n");
 				Serial.print("|     set speed(r/min): <speed nnn CRLF>      |\n");
-				// Serial.print("|     set I_CURRENT(mA): <I nnn CRLF>          |\n");
+				Serial.print("|     set I_CURRENT(mA): <I nnn CRLF>         |\n");
 				Serial.print("|     endstop out: <out n>                    |\n");
+				Serial.print("|     View version information: <version CRLF>|\n");
 				Serial.print("+-----------------------------------------------+\n\n");
 			}
 			serial_buf="";
