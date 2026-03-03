@@ -48,7 +48,7 @@ bool is_front=false;//前进标志位
 uint32_t front_time=0;//前进时间
 const uint32_t DEFAULT_TIMEOUT = 60000;
 uint32_t timeout=60000;//超时时间，单位：ms;
-bool is_error=true;//错误标志位，如果连续60s推送耗材没停过，则认为错误
+bool is_error=false;//错误标志位，如果连续60s推送耗材没停过，则认为错误
 String serial_buf;
 
 static HardwareTimer timer(TIM6);//超时出错
