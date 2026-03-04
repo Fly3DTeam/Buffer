@@ -732,6 +732,29 @@ void buffer_debug(void){
   	// delay(1000);
 }
 
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof(a[0]))
+#define ALIGN(x,a)              __ALIGN_MASK(x,(typeof(x))(a)-1)
+#define __ALIGN_MASK(x,mask)    (((x)+(mask))&~(mask))
+#define ALIGN_DOWN(x,a)         ((x) & ~((typeof(x))(a)-1))
+
+#define FLYBOOT_SIGNATURE 0x21746f6f426e6143
+#define FLYBOOT_REQUEST   0x5984E3FA6CA1589B
+
+static void flyboot_reset()
+{
+    uint32_t *bl_vectors = (uint32_t *)0x8000000;
+    uint64_t *boot_sig = (uint64_t *)(bl_vectors[1] - 9);
+    uint64_t *req_sig = (uint64_t *)bl_vectors[0];
+    if (boot_sig != (void*)ALIGN((size_t)boot_sig, 8)
+        || *boot_sig != FLYBOOT_SIGNATURE
+        || req_sig != (void*)ALIGN((size_t)req_sig, 8))
+        return;
+    asm volatile("cpsid i" ::: "memory"); // Disable interrupts (Cortex-M specific)
+    *req_sig = FLYBOOT_REQUEST;
+
+    NVIC_SystemReset();
+}
+
 
 /**
   * @brief  usb串口接收解析
@@ -911,6 +934,9 @@ void USB_Serial_Analys(void){
 				Serial.print("set DUANLIAO_OUT_STATE  succeed! DUANLIAO_OUT_STATE=");
 				Serial.println(DUANLIAO_OUT_STATE);
 			}
+			else if(strstr(serial_buf.c_str(),"flyboot")){
+				flyboot_reset();
+			}
 			else if(strstr(serial_buf.c_str(),"version")){
 				Serial.println("version: "+String(VERSION));
 			}
@@ -931,6 +957,7 @@ void USB_Serial_Analys(void){
 				Serial.print("|     set speed(r/min): <speed nnn CRLF>      |\n");
 				Serial.print("|     set I_CURRENT(mA): <I nnn CRLF>         |\n");
 				Serial.print("|     endstop out: <out n>                    |\n");
+				Serial.print("|     jump to bootloader: <flyboot CRLF>      |\n");
 				Serial.print("|     View version information: <version CRLF>|\n");
 				Serial.print("+-----------------------------------------------+\n\n");
 			}
