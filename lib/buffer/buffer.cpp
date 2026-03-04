@@ -172,7 +172,7 @@ void buffer_init(){
   buffer_sensor_init();
   buffer_motor_init();
   Signal_Dir_Init();
-  delay(1000);
+//   delay(1000);
 
   VACTRUAL_VALUE=(uint32_t)(SPEED*Move_Divide_NUM*200/60/0.715) ;  //VACTUAL寄存器值
 
@@ -729,7 +729,7 @@ void buffer_debug(void){
 		Serial.println(buf);
 		Serial.println("");
 	}
-  	delay(1000);
+  	// delay(1000);
 }
 
 
@@ -951,7 +951,7 @@ void USB_Serial_Analys(void){
 bool Check_Connet_MDM(void){
 
 	//等待上电稳定
-	delay(1000);
+	delay(200);
 
 	//读取MDM断料引脚状态
 	pinMode(MDM_DPIN,INPUT);

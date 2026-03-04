@@ -77,10 +77,10 @@
 #define LED_GREEN               PB3
 
 // SPI Definitions
-#define PIN_SPI_SS              PA4
-#define PIN_SPI_MOSI            PA7
-#define PIN_SPI_MISO            PA6
-#define PIN_SPI_SCK             PA5
+#define PIN_SPI_SS              PB12
+#define PIN_SPI_MOSI            PB15
+#define PIN_SPI_MISO            PB14
+#define PIN_SPI_SCK             PB13
 
 // I2C Definitions
 #define PIN_WIRE_SDA            PB7
