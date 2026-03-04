@@ -737,7 +737,7 @@ void buffer_debug(void){
 #define __ALIGN_MASK(x,mask)    (((x)+(mask))&~(mask))
 #define ALIGN_DOWN(x,a)         ((x) & ~((typeof(x))(a)-1))
 
-#define FLYBOOT_SIGNATURE 0x21746f6f426e6143
+#define FLYBOOT_SIGNATURE 0x21746F6F42796C46
 #define FLYBOOT_REQUEST   0x5984E3FA6CA1589B
 
 static void flyboot_reset()
