@@ -1,4 +1,4 @@
-This is the firmware source code of the LLL buffer. 
+This is the firmware source code of the LLL Plus Buffer. 
 Please open the project with VS Code and install the PlatformIO IDE extension.
 Plugin Installation Steps:
 1. Open VS Code.
