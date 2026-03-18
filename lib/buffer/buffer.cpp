@@ -26,7 +26,7 @@
 
 
 #include "buffer.h"
-#define VERSION "1.1.5"
+#define VERSION "2.0.0"
 
 //GPIO输入
 #define SIGNAL_COUNT_READ_DIR_IO()	(SIGNAL_COUNT_DIR_GPIO_Port -> IDR & SIGNAL_COUNT_DIR_Pin)
@@ -732,10 +732,8 @@ void buffer_debug(void){
   	// delay(1000);
 }
 
-#define ARRAY_SIZE(a) (sizeof(a) / sizeof(a[0]))
-#define ALIGN(x,a)              __ALIGN_MASK(x,(typeof(x))(a)-1)
-#define __ALIGN_MASK(x,mask)    (((x)+(mask))&~(mask))
-#define ALIGN_DOWN(x,a)         ((x) & ~((typeof(x))(a)-1))
+  #define ALIGN(x,a)      (((x) + ((typeof(x))(a) - 1)) & ~((typeof(x))(a) - 1))
+  #define ALIGN_DOWN(x,a) ((x) & ~((typeof(x))(a) - 1))
 
 #define FLYBOOT_SIGNATURE 0x21746F6F42796C46
 #define FLYBOOT_REQUEST   0x5984E3FA6CA1589B
