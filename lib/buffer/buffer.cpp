@@ -48,6 +48,7 @@ bool is_front=false;//前进标志位
 uint32_t front_time=0;//前进时间
 const uint32_t DEFAULT_TIMEOUT = 60000;
 uint32_t timeout=60000;//超时时间，单位：ms;
+static const uint32_t FILAMENT_RUNOUT_DELAY_MS = 10000;
 bool is_error=false;//错误标志位，如果连续60s推送耗材没停过，则认为错误
 String serial_buf;
 
@@ -340,6 +341,9 @@ void read_sensor_state(void)
 void motor_control(void)
 {
 	static uint32_t cur_times=0;
+	static bool filament_has_been_present=false;
+	static bool filament_runout_delay_flag=false;
+	static uint32_t filament_runout_delay_times=0;
 	cur_times=millis();
 
 	//通知信号关闭
@@ -436,11 +440,20 @@ void motor_control(void)
 		WRITE_EN_PIN(1);
 	}
 	
+	bool no_material = digitalRead(ENDSTOP_3);
 	if(connet_mdm_flag){//连接了MDM断堵料模块
-		//判断耗材
-		if(digitalRead(ENDSTOP_3)&&!digitalRead(MDM_DPIN))
+		no_material = no_material && !digitalRead(MDM_DPIN);
+	}
+
+	if(no_material){
+		if(!filament_runout_delay_flag){
+			filament_runout_delay_flag=true;
+			filament_runout_delay_times=cur_times;
+		}
+
+		if(!filament_has_been_present||cur_times-filament_runout_delay_times>=FILAMENT_RUNOUT_DELAY_MS)
 		{
-			//无耗材，停止电机
+			//上电无耗材或断料延时确认后，停止电机
 			driver.VACTUAL(STOP);	//停止
 			motor_state=Stop;
 			
@@ -455,47 +468,20 @@ void motor_control(void)
 			is_error=false;
 			WRITE_EN_PIN(1);
 
-			
 			return;//无耗材，结束
 		}
-		else if(!blockage_detect.blockage_flag){
-			//有耗材，断料引脚输出非断料状态
-			digitalWrite(DUANLIAO,!DUANLIAO_OUT_STATE);
-			
-			//开启指示灯
-			digitalWrite(START_LED,1);					
-
-		}
-
 	}
 	else{
-		//判断耗材
-		if(digitalRead(ENDSTOP_3))
-		{
-			//无耗材，停止电机
-			driver.VACTUAL(STOP);	//停止
-			motor_state=Stop;
-			
-			//断料引脚输出低电平
-			digitalWrite(DUANLIAO,DUANLIAO_OUT_STATE);
-			
-			//关闭指示灯
-			digitalWrite(START_LED,0);
+		filament_has_been_present=true;
+		filament_runout_delay_flag=false;
+	}
 
-			is_front=false;
-			front_time=0;
-			is_error=false;
-			WRITE_EN_PIN(1);
-
-			
-			return;//无耗材，结束
-		}		
-
-		//有耗材，断料引脚输出非断料状态
+	if(!blockage_detect.blockage_flag){
+		//有耗材或断料延时未超时，断料引脚输出非断料状态
 		digitalWrite(DUANLIAO,!DUANLIAO_OUT_STATE);
 		
 		//开启指示灯
-		digitalWrite(START_LED,1);		
+		digitalWrite(START_LED,1);					
 	}
 
 		
