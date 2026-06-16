@@ -39,7 +39,7 @@
 
 
 
-TMC2209Stepper driver(UART, UART, R_SENSE, DRIVER_ADDRESS);
+TMC2208Stepper driver(UART, UART, R_SENSE);
 Buffer buffer={0};//存储个传感器状态
 Motor_State motor_state=Stop;
 static Motor_State last_motor_state=Stop;
@@ -49,10 +49,43 @@ uint32_t front_time=0;//前进时间
 const uint32_t DEFAULT_TIMEOUT = 60000;
 uint32_t timeout=60000;//超时时间，单位：ms;
 static const uint32_t FILAMENT_RUNOUT_DELAY_MS = 10000;
+static const float DEFAULT_SPEED_MM_S = 30.0f;
+static const float DEFAULT_ACCELERATION_MM_S2 = 500.0f;
+static const uint16_t BUFFER_MAGIC_NUMBER = 0x55AC;
+static const uint16_t BUFFER_LEGACY_RPM_MAGIC_NUMBER = 0x55AA;
+static const uint16_t BUFFER_LEGACY_MM_S_MAGIC_NUMBER = 0x55AB;
+static const float BMG_GEAR_RATIO = 3.0f;
+static const float BMG_DRIVE_CIRCUMFERENCE_MM = 22.93f;
+static const float BMG_MOTOR_STEPS_PER_MM = 200.0f*Move_Divide_NUM*BMG_GEAR_RATIO/BMG_DRIVE_CIRCUMFERENCE_MM;
+static const float MOVE_BOOST_DISTANCE_MM = 100.0f;
+static const float MOVE_BOOST_SPEED_MM_S = 100.0f;
+static const float BOOST_CURRENT_SCALE = 1.2f;
+static const uint32_t MAX_DRIVER_CURRENT_MA = 3000;
+static const uint32_t TMC_STATUS_INTERVAL_MS = 1000;
+static const uint8_t TMC_MAX_BAD_STATUS_COUNT = 3;
+static const bool TMC2225_GCONF_SPREADCYCLE_INVERT_WRITE = true;
+static const uint8_t HALL_EVENT_QUEUE_SIZE = 16;
 bool is_error=false;//错误标志位，如果连续60s推送耗材没停过，则认为错误
 String serial_buf;
 
 static HardwareTimer timer(TIM6);//超时出错
+static HardwareTimer step_timer(TIM3);//STEP pulse output
+static volatile uint32_t step_pulse_count=0;
+static bool step_boost_active=false;
+static bool step_high_speed_mode=false;
+static bool step_boost_current_active=false;
+static Motor_State step_running_state=Stop;
+static float step_current_speed_mm_s=0.0f;
+static float step_target_speed_mm_s=0.0f;
+static uint32_t step_last_update_ms=0;
+static uint32_t step_last_pulse_hz=0;
+static bool tmc_status_error=false;
+static uint8_t tmc_bad_status_count=0;
+static uint32_t tmc_last_status_check_ms=0;
+static volatile uint8_t hall_event_queue[HALL_EVENT_QUEUE_SIZE]={0};
+static volatile uint8_t hall_event_head=0;
+static volatile uint8_t hall_event_tail=0;
+static volatile bool hall_stop_immediate_pending=false;
 TIM_HandleTypeDef htim2;//硬件定时器接收脉冲
 
 bool key1_press_flag=false;
@@ -84,6 +117,7 @@ const float DEFAULT_ALLOW_ERROR_SCALE = 2;
 float allow_error_scale=2;//允许误差比例
 
 uint32_t I_CURRENT = 500;		//电流
+float acceleration=DEFAULT_ACCELERATION_MM_S2;//加速度(mm/s^2)
 
 const int EEPROM_ADDR_TIMEOUT = 0;
 const int EEPROM_ADDR_STEPS = 4;
@@ -111,8 +145,8 @@ void iwdg_init(void)
 	// 2. 设置分频
 	IWDG->PR = IWDG_PRESCALER_256;  
 
-	// 3. 设置重载值
-	IWDG->RLR = 125*10-1;  //超时时间2s
+	// 3. 设置重载值，约4s超时(LSI约32kHz, 256分频后约125Hz)
+	IWDG->RLR = 125*4-1;
 
 	// 4. 启动 IWDG
 	IWDG->KR = 0xCCCC;     	
@@ -123,6 +157,9 @@ void iwdg_init(void)
 //函数声明
 void key1_it_callback(void);
 void key2_it_callback(void);
+void Buffer_S1_IT_Callback(void);
+void Buffer_S2_IT_Callback(void);
+void Buffer_S3_IT_Callback(void);
 
 void USB_Serial_Analys(void);
 bool Check_Connet_MDM(void);
@@ -131,25 +168,105 @@ void REIN_TIM_SIGNAL_COUNT_DeInit(void);
 void Pulse_Receive_Init(void);
 void Blockage_Detect(void);
 void Main_Logic(void);
+void Status_LED_Update(uint32_t nowTime);
 float fastAtof(const char *s);
 void Signal_Dir_Init(void);
+bool IsNoMaterial(void);
+float BmgRpmToMmS(int32_t rpm);
+float StepperEffectiveSpeedMmS(void);
+uint32_t StepperBoostPulseThreshold(void);
+uint32_t StepperBoostCurrentMa(void);
+uint32_t StepperPulseHz(void);
+void Step_Timer_Callback(void);
+void Stepper_ResetMoveTracking(void);
+void Stepper_UpdateSpeed(Motor_State state);
+void Stepper_ApplyAcceleration(void);
+void Stepper_CheckBoost(Motor_State state,bool boost_allowed);
+void Stepper_DisableBoost(Motor_State state);
+bool TMC_SpreadCycleWriteValue(bool enable);
+void TMC_WriteSpreadCycle(bool enable);
+void Stepper_SetHighSpeedMode(void);
+void Stepper_SetSilentMode(void);
+void Stepper_SetBoostCurrent(void);
+void Stepper_RestoreRunCurrent(void);
+void Stepper_Run(Motor_State state);
+void Stepper_Stop(void);
+bool TMC_CrcOk(void);
+uint16_t TMC_ExpectedCurrentMa(void);
+void TMC_ApplyExpectedConfig(void);
+bool TMC_CheckAndRepair(void);
+void TMC_Monitor_Task(void);
+void Hall_Sensor_Latch(uint8_t position);
+uint8_t Hall_Sensor_Pop(void);
+void Hall_Sensor_ClearQueue(void);
 // void Buffer_S3_IT_Callback(void);
 // void Buffer_S2_IT_Callback(void);
 // void Buffer_S1_IT_Callback(void);
 
+float BmgRpmToMmS(int32_t rpm){
+	return rpm*BMG_DRIVE_CIRCUMFERENCE_MM/BMG_GEAR_RATIO/60.0f;
+}
+
+bool IsNoMaterial(void){
+	bool no_material=digitalRead(ENDSTOP_3);
+	if(connet_mdm_flag){
+		no_material = no_material && !digitalRead(MDM_DPIN);
+	}
+	return no_material;
+}
+
 void buffer_parameter_init(Buffer_Parameter &buffer_para){
 	EEPROM.get(0, buffer_para);
-	if(buffer_para.magic_number!=0x55AA){
-		buffer_para=Buffer_Parameter{DEFAULT_TIMEOUT,DEFAULT_STEPS,DEFAULT_ENCODER_LENGTH,DEFAULT_ALLOW_ERROR_SCALE,260,I_CURRENT,DUANLIAO_OUT_STATE,0x55AA};
+	if(buffer_para.magic_number==BUFFER_LEGACY_RPM_MAGIC_NUMBER){
+		int32_t legacy_speed_rpm=260;
+		EEPROM.get(EEPROM_ADDR_SPEED, legacy_speed_rpm);
+		if(legacy_speed_rpm<=0){
+			buffer_para.SPEED=DEFAULT_SPEED_MM_S;
+		}
+		else{
+			buffer_para.SPEED=BmgRpmToMmS(legacy_speed_rpm);
+		}
+		buffer_para.acceleration=DEFAULT_ACCELERATION_MM_S2;
+		buffer_para.magic_number=BUFFER_MAGIC_NUMBER;
+		EEPROM.put(0, buffer_para);
+	}
+	else if(buffer_para.magic_number==BUFFER_LEGACY_MM_S_MAGIC_NUMBER){
+		buffer_para.acceleration=DEFAULT_ACCELERATION_MM_S2;
+		buffer_para.magic_number=BUFFER_MAGIC_NUMBER;
+		EEPROM.put(0, buffer_para);
+	}
+	else if(buffer_para.magic_number!=BUFFER_MAGIC_NUMBER){
+		buffer_para=Buffer_Parameter{DEFAULT_TIMEOUT,DEFAULT_STEPS,DEFAULT_ENCODER_LENGTH,DEFAULT_ALLOW_ERROR_SCALE,DEFAULT_SPEED_MM_S,I_CURRENT,DUANLIAO_OUT_STATE,BUFFER_MAGIC_NUMBER,DEFAULT_ACCELERATION_MM_S2};
 		EEPROM.put(0, buffer_para);
 	}
 	timeout=buffer_para.timeout;
 	steps=buffer_para.steps;
+	if(steps==0||steps>51200){
+		steps=DEFAULT_STEPS;
+		buffer_para.steps=steps;
+		EEPROM.put(0, buffer_para);
+	}
 	encoder_length=buffer_para.encoder_length;
 	allow_error_scale=buffer_para.allow_error_scale;
 	SPEED=buffer_para.SPEED;
+	if(SPEED<0){
+		SPEED=DEFAULT_SPEED_MM_S;
+		buffer_para.SPEED=SPEED;
+		EEPROM.put(0, buffer_para);
+	}
 	I_CURRENT=buffer_para.I_CURRENT;
+	if(I_CURRENT<100||I_CURRENT>MAX_DRIVER_CURRENT_MA){
+		I_CURRENT=500;
+		buffer_para.I_CURRENT=I_CURRENT;
+		EEPROM.put(0, buffer_para);
+	}
 	DUANLIAO_OUT_STATE=buffer_para.DUANLIAO_OUT_STATE;
+	acceleration=buffer_para.acceleration;
+	if(acceleration<=0){
+		acceleration=DEFAULT_ACCELERATION_MM_S2;
+		buffer_para.acceleration=acceleration;
+		EEPROM.put(0, buffer_para);
+	}
 }
 
 void buffer_init(){
@@ -175,10 +292,6 @@ void buffer_init(){
   Signal_Dir_Init();
 //   delay(1000);
 
-  VACTRUAL_VALUE=(uint32_t)(SPEED*Move_Divide_NUM*200/60/0.715) ;  //VACTUAL寄存器值
-
-
-
   timer.pause();
   timer.setPrescaleFactor(4800);//4800分频  48000000/4800=10000
   timer.setOverflow(1000);//100ms
@@ -190,59 +303,15 @@ void buffer_init(){
 
 void buffer_loop()
 {
-	uint32_t lastToggleTime = 0; // 记录上次切换的时间
-	
 	while (1)
 	{
 		uint32_t nowTime=millis();
-		if (blockage_detect.blockage_flag &&nowTime - lastToggleTime >= 50)
-		{							   // 堵料，爆闪
-			lastToggleTime = millis(); // 记录当前时间
-			digitalToggle(ERR_LED);
-			
-		}
-		else{
-			if(connet_mdm_flag){//连接了MDM模块，每秒闪两次
-				static uint8_t led_state=0;
-				if(led_state==0){
-					digitalWrite(ERR_LED,HIGH);
-					led_state=1;
-					lastToggleTime = millis();
-				}
-				else if(led_state==1&&nowTime-lastToggleTime>=100){
-					digitalWrite(ERR_LED,LOW);
-					led_state=2;
-					lastToggleTime = millis();
-				}
-				else if(led_state==2&&nowTime-lastToggleTime>=100){
-					digitalWrite(ERR_LED,HIGH);
-					led_state=3;
-					lastToggleTime = millis();
-				}
-				else if(led_state==3&&nowTime-lastToggleTime>=100){
-					digitalWrite(ERR_LED,LOW);
-					led_state=4;
-					lastToggleTime = millis();
-				}
-				else if(led_state==4&&nowTime-lastToggleTime>=600){
-					led_state=0;
-				}
-
-			}
-			else if(millis() - lastToggleTime >= 500) //没有连接，每秒闪一次
-			{
-				lastToggleTime = millis(); // 记录当前时间
-				digitalToggle(ERR_LED);
-				// Serial.println("CNT:"+String(TIM2->CNT));
-				// Serial.println("	mdm_pulse_cnt:"+String(blockage_detect.mdm_pulse_cnt));
-			}
-
-
-		}
+		Status_LED_Update(nowTime);
 		// 1、读取各传感器的值
 		read_sensor_state();
 		if(connet_mdm_flag) Blockage_Detect();
 		motor_control();
+		TMC_Monitor_Task();
 		USB_Serial_Analys();
 
 		// 堵料输出3s后关断
@@ -259,6 +328,96 @@ void buffer_loop()
 	}
 }
 
+void Status_LED_Update(uint32_t nowTime){
+	static uint32_t lastToggleTime=0;
+	static uint8_t led_state=0;
+	static uint8_t last_mode=0xff;
+
+	uint8_t mode=3;
+	if(tmc_status_error) mode=0;
+	else if(blockage_detect.blockage_flag) mode=1;
+	else if(connet_mdm_flag) mode=2;
+
+	if(mode!=last_mode){
+		last_mode=mode;
+		led_state=0;
+		lastToggleTime=0;
+		digitalWrite(ERR_LED,LOW);
+	}
+
+	if(mode==0){
+		// TMC异常：三连快闪后停顿
+		if(led_state==0){
+			digitalWrite(ERR_LED,HIGH);
+			lastToggleTime=nowTime;
+			led_state=1;
+		}
+		else if(led_state==1&&nowTime-lastToggleTime>=80){
+			digitalWrite(ERR_LED,LOW);
+			lastToggleTime=nowTime;
+			led_state=2;
+		}
+		else if(led_state==2&&nowTime-lastToggleTime>=80){
+			digitalWrite(ERR_LED,HIGH);
+			lastToggleTime=nowTime;
+			led_state=3;
+		}
+		else if(led_state==3&&nowTime-lastToggleTime>=80){
+			digitalWrite(ERR_LED,LOW);
+			lastToggleTime=nowTime;
+			led_state=4;
+		}
+		else if(led_state==4&&nowTime-lastToggleTime>=80){
+			digitalWrite(ERR_LED,HIGH);
+			lastToggleTime=nowTime;
+			led_state=5;
+		}
+		else if(led_state==5&&nowTime-lastToggleTime>=80){
+			digitalWrite(ERR_LED,LOW);
+			lastToggleTime=nowTime;
+			led_state=6;
+		}
+		else if(led_state==6&&nowTime-lastToggleTime>=700){
+			led_state=0;
+		}
+	}
+	else if(mode==1){
+		if(nowTime-lastToggleTime>=50){
+			lastToggleTime=nowTime;
+			digitalToggle(ERR_LED);
+		}
+	}
+	else if(mode==2){
+		if(led_state==0){
+			digitalWrite(ERR_LED,HIGH);
+			led_state=1;
+			lastToggleTime=nowTime;
+		}
+		else if(led_state==1&&nowTime-lastToggleTime>=100){
+			digitalWrite(ERR_LED,LOW);
+			led_state=2;
+			lastToggleTime=nowTime;
+		}
+		else if(led_state==2&&nowTime-lastToggleTime>=100){
+			digitalWrite(ERR_LED,HIGH);
+			led_state=3;
+			lastToggleTime=nowTime;
+		}
+		else if(led_state==3&&nowTime-lastToggleTime>=100){
+			digitalWrite(ERR_LED,LOW);
+			led_state=4;
+			lastToggleTime=nowTime;
+		}
+		else if(led_state==4&&nowTime-lastToggleTime>=600){
+			led_state=0;
+		}
+	}
+	else if(nowTime-lastToggleTime>=500){
+		lastToggleTime=nowTime;
+		digitalToggle(ERR_LED);
+	}
+}
+
 void buffer_sensor_init(){
   //传感器初始化
   pinMode(HALL1,INPUT);
@@ -266,9 +425,9 @@ void buffer_sensor_init(){
   pinMode(HALL3,INPUT);
   pinMode(ENDSTOP_3,INPUT);
 
-//   attachInterrupt(HALL1,&Buffer_S3_IT_Callback,RISING);
-//   attachInterrupt(HALL2,&Buffer_S2_IT_Callback,RISING);
-//   attachInterrupt(HALL3,&Buffer_S1_IT_Callback,RISING);
+  attachInterrupt(HALL1,&Buffer_S3_IT_Callback,CHANGE);
+  attachInterrupt(HALL2,&Buffer_S2_IT_Callback,CHANGE);
+  attachInterrupt(HALL3,&Buffer_S1_IT_Callback,CHANGE);
 
   pinMode(KEY1,INPUT);
   pinMode(KEY2,INPUT);
@@ -297,6 +456,325 @@ void buffer_sensor_init(){
 
 }
 
+float StepperEffectiveSpeedMmS(void){
+	if(SPEED<=0){
+		return 0.0f;
+	}
+	if(step_boost_active&&SPEED<MOVE_BOOST_SPEED_MM_S){
+		return MOVE_BOOST_SPEED_MM_S;
+	}
+	return SPEED;
+}
+
+uint32_t StepperBoostPulseThreshold(void){
+	return (uint32_t)(MOVE_BOOST_DISTANCE_MM*BMG_MOTOR_STEPS_PER_MM+0.5f);
+}
+
+uint32_t StepperBoostCurrentMa(void){
+	uint32_t boost_current=(uint32_t)(I_CURRENT*BOOST_CURRENT_SCALE+0.5f);
+	if(boost_current<I_CURRENT){
+		boost_current=I_CURRENT;
+	}
+	if(boost_current>MAX_DRIVER_CURRENT_MA){
+		boost_current=MAX_DRIVER_CURRENT_MA;
+	}
+	return boost_current;
+}
+
+uint32_t StepperPulseHz(void){
+	if(step_current_speed_mm_s<=0){
+		return 0;
+	}
+	return (uint32_t)(step_current_speed_mm_s*BMG_MOTOR_STEPS_PER_MM+0.5f);
+}
+
+void Step_Timer_Callback(void){
+	digitalWrite(STEP_PIN,HIGH);
+	digitalWrite(STEP_PIN,LOW);
+	step_pulse_count++;
+}
+
+bool TMC_SpreadCycleWriteValue(bool enable){
+	return TMC2225_GCONF_SPREADCYCLE_INVERT_WRITE?!enable:enable;
+}
+
+void TMC_WriteSpreadCycle(bool enable){
+	bool write_value=TMC_SpreadCycleWriteValue(enable);
+	driver.en_spreadCycle(write_value);
+}
+
+void Stepper_SetHighSpeedMode(void){
+	if(!step_high_speed_mode){
+		TMC_WriteSpreadCycle(true);
+		step_high_speed_mode=true;
+	}
+}
+
+void Stepper_SetSilentMode(void){
+	if(step_high_speed_mode){
+		TMC_WriteSpreadCycle(false);
+		step_high_speed_mode=false;
+	}
+}
+
+void Stepper_SetBoostCurrent(void){
+	if(!step_boost_current_active){
+		driver.rms_current(StepperBoostCurrentMa());
+		step_boost_current_active=true;
+	}
+}
+
+void Stepper_RestoreRunCurrent(void){
+	if(step_boost_current_active){
+		driver.rms_current(I_CURRENT);
+		step_boost_current_active=false;
+	}
+}
+
+void Stepper_Stop(void){
+	step_timer.pause();
+	digitalWrite(STEP_PIN,LOW);
+	step_running_state=Stop;
+	step_current_speed_mm_s=0.0f;
+	step_target_speed_mm_s=0.0f;
+	step_last_update_ms=0;
+	step_last_pulse_hz=0;
+	Stepper_ResetMoveTracking();
+	Stepper_RestoreRunCurrent();
+	Stepper_SetSilentMode();
+}
+
+void Stepper_ResetMoveTracking(void){
+	step_pulse_count=0;
+	step_boost_active=false;
+}
+
+void Stepper_SetTimerFrequency(void){
+	uint32_t pulse_hz=StepperPulseHz();
+	if(pulse_hz==0){
+		step_timer.pause();
+		step_last_pulse_hz=0;
+		digitalWrite(STEP_PIN,LOW);
+		return;
+	}
+	if(pulse_hz!=step_last_pulse_hz){
+		step_timer.setOverflow(pulse_hz,HERTZ_FORMAT);
+		step_last_pulse_hz=pulse_hz;
+	}
+}
+
+void Stepper_UpdateSpeed(Motor_State state){
+	step_target_speed_mm_s=StepperEffectiveSpeedMmS();
+	if(state==Stop||step_target_speed_mm_s<=0){
+		Stepper_Stop();
+		WRITE_EN_PIN(1);
+		return;
+	}
+
+	step_timer.pause();
+	digitalWrite(STEP_PIN,LOW);
+	digitalWrite(DIR_PIN,state==Forward?FORWARD:BACK);
+	step_running_state=state;
+	if(step_current_speed_mm_s<=0){
+		step_current_speed_mm_s=step_target_speed_mm_s<1.0f?step_target_speed_mm_s:1.0f;
+	}
+	step_last_update_ms=millis();
+	Stepper_SetTimerFrequency();
+	WRITE_EN_PIN(0);
+	step_timer.resume();
+}
+
+void Stepper_ApplyAcceleration(void){
+	if(step_running_state==Stop||step_target_speed_mm_s<=0){
+		return;
+	}
+	uint32_t now=millis();
+	if(step_last_update_ms==0){
+		step_last_update_ms=now;
+		return;
+	}
+	uint32_t elapsed=now-step_last_update_ms;
+	if(elapsed==0){
+		return;
+	}
+
+	step_last_update_ms=now;
+	float delta=acceleration*elapsed/1000.0f;
+	if(delta<=0){
+		return;
+	}
+
+	if(step_current_speed_mm_s<step_target_speed_mm_s){
+		step_current_speed_mm_s+=delta;
+		if(step_current_speed_mm_s>step_target_speed_mm_s){
+			step_current_speed_mm_s=step_target_speed_mm_s;
+		}
+	}
+	else if(step_current_speed_mm_s>step_target_speed_mm_s){
+		step_current_speed_mm_s-=delta;
+		if(step_current_speed_mm_s<step_target_speed_mm_s){
+			step_current_speed_mm_s=step_target_speed_mm_s;
+		}
+	}
+
+	Stepper_SetTimerFrequency();
+}
+
+void Stepper_DisableBoost(Motor_State state){
+	if(!step_boost_active){
+		return;
+	}
+	step_boost_active=false;
+	Stepper_RestoreRunCurrent();
+	Stepper_SetSilentMode();
+	if(state!=Stop&&step_running_state!=Stop){
+		Stepper_UpdateSpeed(state);
+	}
+}
+
+void Stepper_CheckBoost(Motor_State state,bool boost_allowed){
+	if(state==Stop){
+		return;
+	}
+	if(!boost_allowed){
+		Stepper_DisableBoost(state);
+		return;
+	}
+	if(step_boost_active){
+		return;
+	}
+	if(step_pulse_count>=StepperBoostPulseThreshold()){
+		Stepper_SetBoostCurrent();
+		Stepper_SetHighSpeedMode();
+		step_boost_active=true;
+		Stepper_UpdateSpeed(state);
+	}
+}
+
+void Stepper_Run(Motor_State state){
+	Stepper_RestoreRunCurrent();
+	Stepper_SetSilentMode();
+	Stepper_ResetMoveTracking();
+	step_current_speed_mm_s=0.0f;
+	step_target_speed_mm_s=0.0f;
+	step_last_update_ms=0;
+	step_last_pulse_hz=0;
+	Stepper_UpdateSpeed(state);
+}
+
+bool TMC_CrcOk(void){
+	if(driver.CRCerror){
+		driver.CRCerror=false;
+		return false;
+	}
+	return true;
+}
+
+uint16_t TMC_ExpectedCurrentMa(void){
+	return step_boost_current_active?StepperBoostCurrentMa():I_CURRENT;
+}
+
+void TMC_ApplyExpectedConfig(void){
+	driver.I_scale_analog(false);
+	driver.pdn_disable(true);
+	driver.mstep_reg_select(true);
+	driver.toff(5);
+	driver.intpol(true);
+	driver.rms_current(TMC_ExpectedCurrentMa());
+	driver.microsteps(Move_Divide_NUM);
+	TMC_WriteSpreadCycle(step_high_speed_mode);
+	driver.pwm_autoscale(true);
+}
+
+bool TMC_CheckAndRepair(void){
+	bool comm_ok=true;
+	bool config_ok=true;
+	bool fault_ok=true;
+
+	driver.CRCerror=false;
+
+	bool i_scale_analog=driver.I_scale_analog();
+	comm_ok &= TMC_CrcOk();
+	bool pdn_disable=driver.pdn_disable();
+	comm_ok &= TMC_CrcOk();
+	bool mstep_reg_select=driver.mstep_reg_select();
+	comm_ok &= TMC_CrcOk();
+	bool spread_cycle=driver.en_spreadCycle();
+	comm_ok &= TMC_CrcOk();
+	uint8_t toff=driver.toff();
+	comm_ok &= TMC_CrcOk();
+	bool intpol=driver.intpol();
+	comm_ok &= TMC_CrcOk();
+	bool pwm_autoscale=driver.pwm_autoscale();
+	comm_ok &= TMC_CrcOk();
+	uint16_t microsteps=driver.microsteps();
+	comm_ok &= TMC_CrcOk();
+	uint16_t rms_current=driver.rms_current();
+	comm_ok &= TMC_CrcOk();
+	uint8_t version=driver.version();
+	comm_ok &= TMC_CrcOk();
+	uint8_t gstat=driver.GSTAT();
+	comm_ok &= TMC_CrcOk();
+	uint32_t drv_status=driver.DRV_STATUS();
+	comm_ok &= TMC_CrcOk();
+
+	config_ok &= !i_scale_analog;
+	config_ok &= pdn_disable;
+	config_ok &= mstep_reg_select;
+	config_ok &= (spread_cycle==step_high_speed_mode);
+	config_ok &= (toff==5);
+	config_ok &= intpol;
+	config_ok &= pwm_autoscale;
+	config_ok &= (microsteps==Move_Divide_NUM);
+	config_ok &= (version!=0&&version!=0xff);
+	config_ok &= (abs((int32_t)rms_current-(int32_t)TMC_ExpectedCurrentMa())<=120);
+
+	if(gstat&0x07){
+		driver.GSTAT(0x07);
+		if(gstat&0x06){
+			fault_ok=false;
+		}
+		if(gstat&0x01){
+			config_ok=false;
+		}
+	}
+
+	if(drv_status&0x3f){
+		fault_ok=false;
+	}
+
+	if(!comm_ok||!config_ok){
+		TMC_ApplyExpectedConfig();
+	}
+
+	bool ok=comm_ok&&config_ok&&fault_ok;
+	if(ok){
+		tmc_bad_status_count=0;
+		tmc_status_error=false;
+	}
+	else{
+		if(tmc_bad_status_count<255){
+			tmc_bad_status_count++;
+		}
+		if(tmc_bad_status_count>=TMC_MAX_BAD_STATUS_COUNT){
+			tmc_status_error=true;
+		}
+	}
+	return ok;
+}
+
+void TMC_Monitor_Task(void){
+	uint32_t now=millis();
+	if(step_running_state!=Stop){
+		return;
+	}
+	if(now-tmc_last_status_check_ms<TMC_STATUS_INTERVAL_MS){
+		return;
+	}
+	tmc_last_status_check_ms=now;
+	TMC_CheckAndRepair();
+}
+
 void buffer_motor_init(){
 
   //电机驱动引脚初始化
@@ -304,17 +782,29 @@ void buffer_motor_init(){
   pinMode(STEP_PIN, OUTPUT);
   pinMode(DIR_PIN, OUTPUT);
   digitalWrite(EN_PIN, LOW);      // Enable driver in hardware
+  digitalWrite(STEP_PIN, LOW);
+  digitalWrite(DIR_PIN, FORWARD);
+
+  step_timer.pause();
+  step_timer.setOverflow(1000,HERTZ_FORMAT);
+  step_timer.attachInterrupt(&Step_Timer_Callback);
 
   //电机驱动初始化
-  driver.begin();                  // UART: Init SW UART (if selected) with default 115200 baudrate
   driver.beginSerial(9600);
+  driver.begin();                  // Init TMC2225/TMC2208 UART registers
   driver.I_scale_analog(false);
-  driver.toff(5);                 // Enables driver in software
-  driver.rms_current(I_CURRENT);        // Set motor RMS current
-  driver.microsteps(Move_Divide_NUM);          // Set microsteps to 1/16th
-  driver.VACTUAL(STOP);           // Set velocity
-  driver.en_spreadCycle(true);
+  driver.pdn_disable(true);        // Use UART instead of PDN
+  driver.mstep_reg_select(true);   // Use UART microstep setting
+  driver.toff(5);                  // Enables driver in software
+  driver.intpol(true);
+  driver.rms_current(I_CURRENT);   // Set motor RMS current
+  driver.microsteps(Move_Divide_NUM);
+  TMC_WriteSpreadCycle(false);
+  step_high_speed_mode=false;
+  step_boost_current_active=false;
   driver.pwm_autoscale(true);
+  Stepper_Stop();
+  WRITE_EN_PIN(1);
  
 }
 
@@ -325,9 +815,32 @@ void buffer_motor_init(){
 **/
 void read_sensor_state(void)
 {
-	buffer.buffer1_pos1_sensor_state= digitalRead(HALL3);
-	buffer.buffer1_pos2_sensor_state= digitalRead(HALL2);	
-	buffer.buffer1_pos3_sensor_state= digitalRead(HALL1);		
+	bool pos1=false;
+	bool pos2=false;
+	bool pos3=false;
+	bool raw_pos1=digitalRead(HALL3);
+	bool raw_pos2=digitalRead(HALL2);
+	bool raw_pos3=digitalRead(HALL1);
+
+	if(raw_pos2){
+		Hall_Sensor_ClearQueue();
+		pos2=true;
+	}
+	else{
+		uint8_t hall_event=Hall_Sensor_Pop();
+		if(hall_event==2) pos2=true;
+		else if(hall_event==1) pos1=true;
+		else if(hall_event==3) pos3=true;
+		else{
+			pos1=raw_pos1;
+			pos2=raw_pos2;
+			pos3=raw_pos3;
+		}
+	}
+
+	buffer.buffer1_pos1_sensor_state=pos1;
+	buffer.buffer1_pos2_sensor_state=pos2;	
+	buffer.buffer1_pos3_sensor_state=pos3;		
 	buffer.buffer1_material_swtich_state=digitalRead(ENDSTOP_3);	
 	buffer.key1=digitalRead(KEY1);
 	buffer.key2=digitalRead(KEY2);
@@ -345,6 +858,20 @@ void motor_control(void)
 	static bool filament_runout_delay_flag=false;
 	static uint32_t filament_runout_delay_times=0;
 	cur_times=millis();
+	Stepper_ApplyAcceleration();
+
+	if(hall_stop_immediate_pending||buffer.buffer1_pos2_sensor_state){
+		noInterrupts();
+		hall_stop_immediate_pending=false;
+		interrupts();
+		Stepper_Stop();
+		motor_state=Stop;
+		last_motor_state=Stop;
+		is_front=false;
+		front_time=0;
+		WRITE_EN_PIN(1);
+		return;
+	}
 
 	//通知信号关闭
 	if(inform_flag&&cur_times-inform_times>=3000){
@@ -392,22 +919,26 @@ void motor_control(void)
 	}	
 
 	//按键1按下后长按
-	if(key1_press_flag&&cur_times-key1_press_times>=500||digitalRead(BACK_SIGNAL_PIN)==LOW)
+	if(((key1_press_flag&&cur_times-key1_press_times>=500)||digitalRead(BACK_SIGNAL_PIN)==LOW)&&!buffer.buffer1_pos2_sensor_state)
 	{
 		
-		WRITE_EN_PIN(0);//使能
-    	driver.VACTUAL(STOP);	//停止
-		
-    	driver.shaft(BACK);
-    	driver.VACTUAL(VACTRUAL_VALUE);
+		Stepper_Stop();
+    	Stepper_Run(Back);
 		while(key1_press_flag||digitalRead(BACK_SIGNAL_PIN)==LOW){
+			read_sensor_state();
+			if(buffer.buffer1_pos2_sensor_state){
+				break;
+			}
+			Stepper_CheckBoost(Back,!IsNoMaterial());
+			Stepper_ApplyAcceleration();
+			TMC_Monitor_Task();
 			delay(1);
 			g_run_cnt++;
 			// Serial.println("key1_press_flag is true ");
 		}//等待松手
 					
 
-		driver.VACTUAL(STOP);	//停止
+		Stepper_Stop();
 		motor_state=Stop;
 
 		is_front=false;
@@ -417,21 +948,25 @@ void motor_control(void)
 		is_error=true;
 
 	}
-	else if(key2_press_flag&&cur_times-key2_press_times>=500||digitalRead(FRONT_SIGNAL_PIN)==LOW)//按键2按下后长按
+	else if(((key2_press_flag&&cur_times-key2_press_times>=500)||digitalRead(FRONT_SIGNAL_PIN)==LOW)&&!buffer.buffer1_pos2_sensor_state)//按键2按下后长按
 	{
 
-		WRITE_EN_PIN(0);
-		driver.VACTUAL(STOP);	//停止
-		
-    	driver.shaft(FORWARD);
-		driver.VACTUAL(VACTRUAL_VALUE);
+		Stepper_Stop();
+    	Stepper_Run(Forward);
 		while(key2_press_flag||digitalRead(FRONT_SIGNAL_PIN)==LOW){
+			read_sensor_state();
+			if(buffer.buffer1_pos2_sensor_state){
+				break;
+			}
+			Stepper_CheckBoost(Forward,!IsNoMaterial());
+			Stepper_ApplyAcceleration();
+			TMC_Monitor_Task();
 			delay(1);
 			g_run_cnt++;
 		};//等待松手
 					
 
-		driver.VACTUAL(STOP);	//停止
+		Stepper_Stop();
 		motor_state=Stop;
 
 		is_front=false;
@@ -440,10 +975,7 @@ void motor_control(void)
 		WRITE_EN_PIN(1);
 	}
 	
-	bool no_material = digitalRead(ENDSTOP_3);
-	if(connet_mdm_flag){//连接了MDM断堵料模块
-		no_material = no_material && !digitalRead(MDM_DPIN);
-	}
+	bool no_material = IsNoMaterial();
 
 	if(no_material){
 		if(!filament_runout_delay_flag){
@@ -454,7 +986,7 @@ void motor_control(void)
 		if(!filament_has_been_present||cur_times-filament_runout_delay_times>=FILAMENT_RUNOUT_DELAY_MS)
 		{
 			//上电无耗材或断料延时确认后，停止电机
-			driver.VACTUAL(STOP);	//停止
+			Stepper_Stop();
 			motor_state=Stop;
 			
 			//断料引脚输出断料状态
@@ -490,26 +1022,26 @@ void motor_control(void)
 	//判断是否有错误
 	if(is_error){
 		//停止电机
-		driver.VACTUAL(STOP);	//停止
+		Stepper_Stop();
 		motor_state=Stop;
 		WRITE_EN_PIN(1);
 		return ;
 	}
 
 	//缓冲器位置记录
-	if(buffer.buffer1_pos1_sensor_state)	//缓冲器位置为1，耗材往前推
-	{
-		last_motor_state=motor_state;		//记录上一次状态
-		motor_state=Forward;
-		is_front=true;
-
-	}
-	else if(buffer.buffer1_pos2_sensor_state)	//缓冲器位置为2,电机停止转动
+	if(buffer.buffer1_pos2_sensor_state)	//缓冲器位置为2,电机停止转动
 	{
 		last_motor_state=motor_state;		//记录上一次状态
 		motor_state=Stop;
 		is_front=false;
 		front_time=0;
+	}
+	else if(buffer.buffer1_pos1_sensor_state)	//缓冲器位置为1，耗材往前推
+	{
+		last_motor_state=motor_state;		//记录上一次状态
+		motor_state=Forward;
+		is_front=true;
+
 	}
 	else if(buffer.buffer1_pos3_sensor_state)	//缓冲器位置为3，回退耗材
 	{
@@ -519,47 +1051,28 @@ void motor_control(void)
 		front_time=0;
 	}
 			
-	if(motor_state==last_motor_state)//如果上次状态跟这次状态一致，则不需要再次发送控制命令,结束此次函数
+	if(motor_state==last_motor_state){//如果上次状态跟这次状态一致，则不需要再次发送控制命令,结束此次函数
+		Stepper_CheckBoost(motor_state,!no_material);
 		return;
-	
-	static uint8_t write_cnt=0;
-	uint8_t retry_count=9;
+	}
 	
 	//电机控制
 	switch(motor_state)
 	{
 		case Forward://向前
 		{
-			WRITE_EN_PIN(0);
-			if(last_motor_state==Back)	driver.VACTUAL(STOP);//上次是后退，先停下再前进
-			driver.shaft(FORWARD);
-			write_cnt=driver.IFCNT();
-			driver.VACTUAL(VACTRUAL_VALUE);
-			while(write_cnt==driver.IFCNT()&&retry_count--){//发送失败重发
-				driver.VACTUAL(VACTRUAL_VALUE);
-			}
+			Stepper_Run(Forward);
 
 		}break;
 		case Stop://停止
 		{
-			write_cnt=driver.IFCNT();
-			driver.VACTUAL(STOP);
-			while(write_cnt==driver.IFCNT()&&retry_count--){//发送失败重发
-				driver.VACTUAL(STOP);
-			}	
+			Stepper_Stop();
 			WRITE_EN_PIN(1);		
 
 		}break;
 		case Back://向后
 		{
-			WRITE_EN_PIN(0);
-			if(last_motor_state==Forward)	driver.VACTUAL(STOP);;//上次是前进，先停下再后退
-			driver.shaft(BACK);
-			write_cnt=driver.IFCNT();
-			driver.VACTUAL(VACTRUAL_VALUE);
-			while(write_cnt==driver.IFCNT()&&retry_count--){//发送失败重发
-				driver.VACTUAL(VACTRUAL_VALUE);
-			}				
+			Stepper_Run(Back);
 		}break;
 		
 	}
@@ -569,27 +1082,20 @@ void motor_control(void)
 
 void timer_it_callback(){
 
-	//喂狗(每100ms喂狗一次)
+	//每100ms进一次中断，每1s确认主循环心跳后再喂狗
 	static uint32_t i=0;
 	i++;
-	//每5秒检测g_run_cnt的值
-	if(i>=50)
+	if(i>=10)
 	{
-		//主程序存在异常
 		if(g_run_cnt == 0)
 		{
-			Serial.println("program excepiton,iwdg trigger reset cpu\r\n");
-			//等待看门狗超时触发复位
-			while(1){
-				delay(1);
-			}
+			return;
 		}
 		
 		g_run_cnt=0;
 		
 		i=0;
 	}
-	// HAL_IWDG_Refresh(&hiwdg);
 	IWDG->KR = 0xAAAA;   // 相当于 HAL_IWDG_Refresh(&hiwdg);
 
 
@@ -646,6 +1152,59 @@ void key2_it_callback(void){
 		}
 		key2_press_flag=false;
 	}	
+}
+
+void Hall_Sensor_Latch(uint8_t position){
+	if(position==2){
+		TIM3->CR1 &= ~TIM_CR1_CEN;
+		digitalWrite(STEP_PIN,LOW);
+		hall_stop_immediate_pending=true;
+		hall_event_head=0;
+		hall_event_tail=0;
+	}
+	uint8_t next_head=(hall_event_head+1)%HALL_EVENT_QUEUE_SIZE;
+	if(next_head==hall_event_tail){
+		hall_event_tail=(hall_event_tail+1)%HALL_EVENT_QUEUE_SIZE;
+	}
+	hall_event_queue[hall_event_head]=position;
+	hall_event_head=next_head;
+}
+
+uint8_t Hall_Sensor_Pop(void){
+	noInterrupts();
+	if(hall_event_tail==hall_event_head){
+		interrupts();
+		return 0;
+	}
+	uint8_t position=hall_event_queue[hall_event_tail];
+	hall_event_tail=(hall_event_tail+1)%HALL_EVENT_QUEUE_SIZE;
+	interrupts();
+	return position;
+}
+
+void Hall_Sensor_ClearQueue(void){
+	noInterrupts();
+	hall_event_head=0;
+	hall_event_tail=0;
+	interrupts();
+}
+
+void Buffer_S1_IT_Callback(void){
+	if(digitalRead(HALL3)){
+		Hall_Sensor_Latch(1);
+	}
+}
+
+void Buffer_S2_IT_Callback(void){
+	if(digitalRead(HALL2)){
+		Hall_Sensor_Latch(2);
+	}
+}
+
+void Buffer_S3_IT_Callback(void){
+	if(digitalRead(HALL1)){
+		Hall_Sensor_Latch(3);
+	}
 }
 
 void Recv_MDM_Pulse_IT_Callback(void){
@@ -783,9 +1342,10 @@ void USB_Serial_Analys(void){
 				}
 				serial_buf=serial_buf.substring(index+1);
 				int64_t num=serial_buf.toInt();
-				if(num<0||num>51200){
+				if(num<=0||num>51200){
 					serial_buf="";
 					Serial.println("Error: Invalid steps value.");
+					return ;
 				}
 				buffer_para.steps=num;
 				steps=num;
@@ -830,9 +1390,14 @@ void USB_Serial_Analys(void){
 			else if(strstr(serial_buf.c_str(),"info")){
 				Serial.println("encoder_length="+String(encoder_length));
 				Serial.println("timeout="+String(timeout));
-				Serial.println("steps="+String(steps));
+				Serial.println("signal_steps="+String(steps));
+				Serial.println("speed(mm/s)="+String(SPEED));
+				Serial.println("acceleration(mm/s^2)="+String(acceleration));
+				Serial.println("bmg_motor_steps_per_mm="+String(BMG_MOTOR_STEPS_PER_MM));
 				Serial.println("allow_error_scale="+String(allow_error_scale));
 				Serial.println("allow_error="+String(blockage_detect.allow_error));
+				Serial.println("I_CURRENT="+String(I_CURRENT));
+				Serial.println("boost_current="+String(StepperBoostCurrentMa()));
 				Serial.println("DUANLIAO_OUT_STATE="+String(buffer_para.DUANLIAO_OUT_STATE));
 			}			
 			else if(strstr(serial_buf.c_str(),"scale")){
@@ -861,7 +1426,7 @@ void USB_Serial_Analys(void){
 				int index=serial_buf.indexOf(" ");
 				if(index==-1){
 					serial_buf="";
-					Serial.println("speed: "+String(SPEED));
+					Serial.println("speed(mm/s): "+String(SPEED));
 					return ;
 				}
 				serial_buf=serial_buf.substring(index+1);
@@ -873,11 +1438,34 @@ void USB_Serial_Analys(void){
 				}
 				buffer_para.SPEED=num;
 				SPEED=num;
-				VACTRUAL_VALUE=(uint32_t)(SPEED*Move_Divide_NUM*200/60/0.715) ;  //VACTUAL寄存器值
+				if(motor_state!=Stop){
+					Stepper_UpdateSpeed(motor_state);
+				}
 				EEPROM.put(0, buffer_para);
 				serial_buf="";
-				Serial.print("set speed  succeed! speed=");
+				Serial.print("set speed succeed! speed(mm/s)=");
 				Serial.println(SPEED);
+			}
+			else if(strstr(serial_buf.c_str(),"accel")){
+				int index=serial_buf.indexOf(" ");
+				if(index==-1){
+					serial_buf="";
+					Serial.println("acceleration(mm/s^2): "+String(acceleration));
+					return ;
+				}
+				serial_buf=serial_buf.substring(index+1);
+				float num = fastAtof(serial_buf.c_str());
+				if(num<=0){
+					serial_buf="";
+					Serial.println("Error: Invalid acceleration value.");
+					return ;
+				}
+				buffer_para.acceleration=num;
+				acceleration=num;
+				EEPROM.put(0, buffer_para);
+				serial_buf="";
+				Serial.print("set acceleration succeed! acceleration(mm/s^2)=");
+				Serial.println(acceleration);
 			}			
 			else if(strstr(serial_buf.c_str(),"I")){
 				int index=serial_buf.indexOf(" ");
@@ -889,13 +1477,19 @@ void USB_Serial_Analys(void){
 				serial_buf=serial_buf.substring(index+1);
 				// float num = serial_buf.toFloat();
 				int32_t num = atoi(serial_buf.c_str());
-				if(num<0||num>3000){
+				if(num<100||num>3000){
 					serial_buf="";
-					Serial.println("Error: Invalid I_CURRENT  value,range:0-3000mA");
+					Serial.println("Error: Invalid I_CURRENT  value,range:100-3000mA");
 					return ;
 				}
 				buffer_para.I_CURRENT=num;
 				I_CURRENT=num;
+				if(step_boost_current_active){
+					driver.rms_current(StepperBoostCurrentMa());
+				}
+				else{
+					driver.rms_current(I_CURRENT);
+				}
 				EEPROM.put(0, buffer_para);
 				serial_buf="";
 				Serial.print("set I_CURRENT  succeed! I_CURRENT=");
@@ -932,13 +1526,14 @@ void USB_Serial_Analys(void){
 				Serial.println("command error!");
 				Serial.print("\n+---------------------------------------------+\n");
 				Serial.print("|         Fly Buffer Command Set              |\n");
-				Serial.print("|     set steps per mm: <steps nnn CRLF>      |\n");
+				Serial.print("|     set signal steps/mm: <steps nnn CRLF>   |\n");
 				Serial.print("|     set encoder length: <encoder nnn CRLF>  |\n");
 				Serial.print("|     set timeout : <timeout nnn CRLF>        |\n");
 				Serial.print("|     read timeout: <rt CRLF>                 |\n");
 				Serial.print("|     show all info : <info CRLF>             |\n");
 				Serial.print("|     set scale: <scale nnn CRLF>             |\n");
-				Serial.print("|     set speed(r/min): <speed nnn CRLF>      |\n");
+				Serial.print("|     set speed(mm/s): <speed nnn CRLF>       |\n");
+				Serial.print("|     set accel(mm/s^2): <accel nnn CRLF>     |\n");
 				Serial.print("|     set I_CURRENT(mA): <I nnn CRLF>         |\n");
 				Serial.print("|     endstop out: <out n>                    |\n");
 				Serial.print("|     jump to bootloader: <flyboot CRLF>      |\n");
