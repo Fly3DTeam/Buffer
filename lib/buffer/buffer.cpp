@@ -26,7 +26,7 @@
 
 
 #include "buffer.h"
-#define VERSION "2.0.0"
+#define VERSION "2.0.1"
 
 //GPIO输入
 #define SIGNAL_COUNT_READ_DIR_IO()	(SIGNAL_COUNT_DIR_GPIO_Port -> IDR & SIGNAL_COUNT_DIR_Pin)
@@ -57,6 +57,8 @@ static const uint16_t BUFFER_LEGACY_MM_S_MAGIC_NUMBER = 0x55AB;
 static const float BMG_GEAR_RATIO = 3.0f;
 static const float BMG_DRIVE_CIRCUMFERENCE_MM = 22.93f;
 static const float BMG_MOTOR_STEPS_PER_MM = 200.0f*Move_Divide_NUM*BMG_GEAR_RATIO/BMG_DRIVE_CIRCUMFERENCE_MM;
+static const uint16_t MOVE_RUN_MICROSTEPS = Move_Divide_NUM;
+static const uint16_t MOVE_BOOST_MICROSTEPS = MOVE_RUN_MICROSTEPS;
 static const float MOVE_BOOST_DISTANCE_MM = 100.0f;
 static const float MOVE_BOOST_SPEED_MM_S = 100.0f;
 static const float BOOST_CURRENT_SCALE = 1.2f;
@@ -66,6 +68,7 @@ static const uint8_t TMC_MAX_BAD_STATUS_COUNT = 3;
 static const bool TMC2225_GCONF_SPREADCYCLE_INVERT_WRITE = true;
 static const uint8_t HALL_EVENT_QUEUE_SIZE = 16;
 bool is_error=false;//错误标志位，如果连续60s推送耗材没停过，则认为错误
+static volatile bool timeout_error=false;
 String serial_buf;
 
 static HardwareTimer timer(TIM6);//超时出错
@@ -79,6 +82,7 @@ static float step_current_speed_mm_s=0.0f;
 static float step_target_speed_mm_s=0.0f;
 static uint32_t step_last_update_ms=0;
 static uint32_t step_last_pulse_hz=0;
+static uint16_t step_active_microsteps=MOVE_RUN_MICROSTEPS;
 static bool tmc_status_error=false;
 static uint8_t tmc_bad_status_count=0;
 static uint32_t tmc_last_status_check_ms=0;
@@ -173,6 +177,9 @@ float fastAtof(const char *s);
 void Signal_Dir_Init(void);
 bool IsNoMaterial(void);
 float BmgRpmToMmS(int32_t rpm);
+float StepperMotorStepsPerMm(void);
+uint16_t StepperExpectedMicrosteps(void);
+void Stepper_SetMicrosteps(uint16_t microsteps,bool force=false);
 float StepperEffectiveSpeedMmS(void);
 uint32_t StepperBoostPulseThreshold(void);
 uint32_t StepperBoostCurrentMa(void);
@@ -205,6 +212,25 @@ void Hall_Sensor_ClearQueue(void);
 
 float BmgRpmToMmS(int32_t rpm){
 	return rpm*BMG_DRIVE_CIRCUMFERENCE_MM/BMG_GEAR_RATIO/60.0f;
+}
+
+float StepperMotorStepsPerMm(void){
+	return 200.0f*step_active_microsteps*BMG_GEAR_RATIO/BMG_DRIVE_CIRCUMFERENCE_MM;
+}
+
+uint16_t StepperExpectedMicrosteps(void){
+	return step_boost_active?MOVE_BOOST_MICROSTEPS:MOVE_RUN_MICROSTEPS;
+}
+
+void Stepper_SetMicrosteps(uint16_t microsteps,bool force){
+	if(microsteps==0){
+		return;
+	}
+	if(!force&&step_active_microsteps==microsteps){
+		return;
+	}
+	driver.microsteps(microsteps);
+	step_active_microsteps=microsteps;
 }
 
 bool IsNoMaterial(void){
@@ -485,12 +511,14 @@ uint32_t StepperPulseHz(void){
 	if(step_current_speed_mm_s<=0){
 		return 0;
 	}
-	return (uint32_t)(step_current_speed_mm_s*BMG_MOTOR_STEPS_PER_MM+0.5f);
+	return (uint32_t)(step_current_speed_mm_s*StepperMotorStepsPerMm()+0.5f);
 }
 
 void Step_Timer_Callback(void){
-	digitalWrite(STEP_PIN,HIGH);
-	digitalWrite(STEP_PIN,LOW);
+	GPIOC->BSRR = GPIO_PIN_13;
+	__NOP(); __NOP(); __NOP(); __NOP();
+	__NOP(); __NOP(); __NOP(); __NOP();
+	GPIOC->BSRR = (uint32_t)GPIO_PIN_13 << 16U;
 	step_pulse_count++;
 }
 
@@ -540,6 +568,7 @@ void Stepper_Stop(void){
 	step_last_update_ms=0;
 	step_last_pulse_hz=0;
 	Stepper_ResetMoveTracking();
+	Stepper_SetMicrosteps(MOVE_RUN_MICROSTEPS);
 	Stepper_RestoreRunCurrent();
 	Stepper_SetSilentMode();
 }
@@ -624,7 +653,9 @@ void Stepper_DisableBoost(Motor_State state){
 	if(!step_boost_active){
 		return;
 	}
+	step_timer.pause();
 	step_boost_active=false;
+	Stepper_SetMicrosteps(MOVE_RUN_MICROSTEPS);
 	Stepper_RestoreRunCurrent();
 	Stepper_SetSilentMode();
 	if(state!=Stop&&step_running_state!=Stop){
@@ -644,9 +675,11 @@ void Stepper_CheckBoost(Motor_State state,bool boost_allowed){
 		return;
 	}
 	if(step_pulse_count>=StepperBoostPulseThreshold()){
+		step_timer.pause();
 		Stepper_SetBoostCurrent();
 		Stepper_SetHighSpeedMode();
 		step_boost_active=true;
+		Stepper_SetMicrosteps(MOVE_BOOST_MICROSTEPS);
 		Stepper_UpdateSpeed(state);
 	}
 }
@@ -655,6 +688,7 @@ void Stepper_Run(Motor_State state){
 	Stepper_RestoreRunCurrent();
 	Stepper_SetSilentMode();
 	Stepper_ResetMoveTracking();
+	Stepper_SetMicrosteps(MOVE_RUN_MICROSTEPS);
 	step_current_speed_mm_s=0.0f;
 	step_target_speed_mm_s=0.0f;
 	step_last_update_ms=0;
@@ -681,7 +715,7 @@ void TMC_ApplyExpectedConfig(void){
 	driver.toff(5);
 	driver.intpol(true);
 	driver.rms_current(TMC_ExpectedCurrentMa());
-	driver.microsteps(Move_Divide_NUM);
+	Stepper_SetMicrosteps(StepperExpectedMicrosteps(),true);
 	TMC_WriteSpreadCycle(step_high_speed_mode);
 	driver.pwm_autoscale(true);
 }
@@ -725,7 +759,7 @@ bool TMC_CheckAndRepair(void){
 	config_ok &= (toff==5);
 	config_ok &= intpol;
 	config_ok &= pwm_autoscale;
-	config_ok &= (microsteps==Move_Divide_NUM);
+	config_ok &= (microsteps==StepperExpectedMicrosteps());
 	config_ok &= (version!=0&&version!=0xff);
 	config_ok &= (abs((int32_t)rms_current-(int32_t)TMC_ExpectedCurrentMa())<=120);
 
@@ -798,7 +832,7 @@ void buffer_motor_init(){
   driver.toff(5);                  // Enables driver in software
   driver.intpol(true);
   driver.rms_current(I_CURRENT);   // Set motor RMS current
-  driver.microsteps(Move_Divide_NUM);
+  Stepper_SetMicrosteps(MOVE_RUN_MICROSTEPS,true);
   TMC_WriteSpreadCycle(false);
   step_high_speed_mode=false;
   step_boost_current_active=false;
@@ -857,6 +891,7 @@ void motor_control(void)
 	static bool filament_has_been_present=false;
 	static bool filament_runout_delay_flag=false;
 	static uint32_t filament_runout_delay_times=0;
+	static bool last_no_material=true;
 	cur_times=millis();
 	Stepper_ApplyAcceleration();
 
@@ -976,6 +1011,17 @@ void motor_control(void)
 	}
 	
 	bool no_material = IsNoMaterial();
+	bool material_reloaded=last_no_material&&!no_material;
+	last_no_material=no_material;
+
+	if(material_reloaded&&timeout_error){
+		noInterrupts();
+		timeout_error=false;
+		interrupts();
+		is_error=false;
+		is_front=false;
+		front_time=0;
+	}
 
 	if(no_material){
 		if(!filament_runout_delay_flag){
@@ -997,7 +1043,9 @@ void motor_control(void)
 
 			is_front=false;
 			front_time=0;
-			is_error=false;
+			if(!timeout_error){
+				is_error=false;
+			}
 			WRITE_EN_PIN(1);
 
 			return;//无耗材，结束
@@ -1108,6 +1156,7 @@ void timer_it_callback(){
 		front_time+=100;
 		if (front_time > timeout)
 		{ // 如果超时
+			timeout_error = true;
 			is_error = true;
 		}
 	}

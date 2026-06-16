@@ -89,7 +89,7 @@
 #define R_SENSE 0.11f // Match to your driver
 
 static float SPEED=30.0f;  // speed in mm/s
-#define Move_Divide_NUM			((int32_t)(64))		//(每步柔性件控制细分量)
+#define Move_Divide_NUM			((int32_t)(16))		//(每步柔性件控制细分量)
 
 #define STOP 0				//停止
 #define WRITE_EN_PIN(x) digitalWrite(EN_PIN,x)//使能EN引脚
