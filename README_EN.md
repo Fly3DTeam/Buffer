@@ -45,6 +45,15 @@ Chinese documentation is available in [README.md](README.md).
 - Boost is disabled when there is no filament.
 - The firmware uses 16 microsteps everywhere to reduce STEP interrupt load and improve stability at `100mm/s`.
 
+## Button Controls
+
+- Single-click either button to clear the pause/error state and resume automatic operation.
+- Double-click either button to pause automatic operation and stop the motor.
+- Hold the back button for manual retraction, or hold the forward button for manual feeding.
+- Hold both buttons for 2 seconds to enable or disable fast mode. Both buttons must be released before it can be toggled again.
+- Fast mode is enabled by default. When enabled, movement beyond `100mm` may boost to `100mm/s`. Disabling it prevents automatic boost and immediately exits an active boost.
+- Enabling fast mode is confirmed by three short flashes; disabling it is confirmed by two slow flashes. The status LED then resumes its normal indication.
+
 ## Filament Runout
 
 - If the device powers on with no filament, runout is reported immediately.
