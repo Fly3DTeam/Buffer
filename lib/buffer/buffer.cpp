@@ -26,7 +26,7 @@
 
 
 #include "buffer.h"
-#define VERSION "2.0.1"
+#define VERSION "2.0.2"
 
 //GPIO输入
 #define SIGNAL_COUNT_READ_DIR_IO()	(SIGNAL_COUNT_DIR_GPIO_Port -> IDR & SIGNAL_COUNT_DIR_Pin)
@@ -62,6 +62,10 @@ static const uint16_t MOVE_BOOST_MICROSTEPS = MOVE_RUN_MICROSTEPS;
 static const float MOVE_BOOST_DISTANCE_MM = 100.0f;
 static const float MOVE_BOOST_SPEED_MM_S = 100.0f;
 static const float BOOST_CURRENT_SCALE = 1.2f;
+static const uint16_t HOLD_CURRENT_MA = 50;
+static const uint8_t TMC_POWERDOWN_DELAY = 20;
+static const uint8_t TMC_HOLD_DELAY = 1;
+static const uint32_t MOTOR_IDLE_DISABLE_MS = 30000;
 static const uint32_t MAX_DRIVER_CURRENT_MA = 3000;
 static const uint32_t TMC_STATUS_INTERVAL_MS = 1000;
 static const uint8_t TMC_MAX_BAD_STATUS_COUNT = 3;
@@ -81,6 +85,9 @@ static volatile uint32_t step_pulse_count=0;
 static bool step_boost_active=false;
 static bool step_high_speed_mode=false;
 static bool step_boost_current_active=false;
+static bool step_driver_enabled=false;
+static bool step_idle_timer_active=false;
+static uint32_t step_idle_start_ms=0;
 static Motor_State step_running_state=Stop;
 static float step_current_speed_mm_s=0.0f;
 static float step_target_speed_mm_s=0.0f;
@@ -207,6 +214,10 @@ void Stepper_SetHighSpeedMode(void);
 void Stepper_SetSilentMode(void);
 void Stepper_SetBoostCurrent(void);
 void Stepper_RestoreRunCurrent(void);
+uint8_t TMC_CurrentScaleForMa(uint16_t current_ma);
+void TMC_SetRunAndHoldCurrent(uint16_t run_current_ma);
+void Stepper_EnableDriver(void);
+void Stepper_IdleDisableTask(uint32_t nowTime);
 void Stepper_Run(Motor_State state);
 void Stepper_Stop(void);
 bool TMC_CrcOk(void);
@@ -351,6 +362,7 @@ void buffer_loop()
 		read_sensor_state();
 		if(connet_mdm_flag) Blockage_Detect();
 		motor_control();
+		Stepper_IdleDisableTask(millis());
 		TMC_Monitor_Task();
 		USB_Serial_Analys();
 
@@ -584,19 +596,59 @@ void Stepper_SetSilentMode(void){
 
 void Stepper_SetBoostCurrent(void){
 	if(!step_boost_current_active){
-		driver.rms_current(StepperBoostCurrentMa());
+		TMC_SetRunAndHoldCurrent(StepperBoostCurrentMa());
 		step_boost_current_active=true;
+	}
+}
+
+uint8_t TMC_CurrentScaleForMa(uint16_t current_ma){
+	// vsense由运行电流决定；在相同量程下单独计算IHOLD的电流档位。
+	float v_fs=driver.vsense()?0.180f:0.325f;
+	float cs_value=32.0f*1.41421f*(current_ma/1000.0f)*(R_SENSE+0.02f)/v_fs-1.0f;
+	int32_t current_scale=(int32_t)(cs_value+0.5f);
+	if(current_scale<0){
+		current_scale=0;
+	}
+	else if(current_scale>31){
+		current_scale=31;
+	}
+	return (uint8_t)current_scale;
+}
+
+void TMC_SetRunAndHoldCurrent(uint16_t run_current_ma){
+	// rms_current负责设置IRUN并选择vsense，IHOLD再独立设置为50mA档位。
+	driver.rms_current(run_current_ma,1.0f);
+	driver.ihold(TMC_CurrentScaleForMa(HOLD_CURRENT_MA));
+}
+
+void Stepper_EnableDriver(void){
+	if(!step_driver_enabled){
+		WRITE_EN_PIN(0);
+		step_driver_enabled=true;
+	}
+	step_idle_timer_active=false;
+}
+
+void Stepper_IdleDisableTask(uint32_t nowTime){
+	if(step_running_state!=Stop||!step_driver_enabled||!step_idle_timer_active){
+		return;
+	}
+	if(nowTime-step_idle_start_ms>=MOTOR_IDLE_DISABLE_MS){
+		WRITE_EN_PIN(1);
+		step_driver_enabled=false;
+		step_idle_timer_active=false;
 	}
 }
 
 void Stepper_RestoreRunCurrent(void){
 	if(step_boost_current_active){
-		driver.rms_current(I_CURRENT);
+		TMC_SetRunAndHoldCurrent(I_CURRENT);
 		step_boost_current_active=false;
 	}
 }
 
 void Stepper_Stop(void){
+	bool was_running=step_running_state!=Stop;
 	step_timer.pause();
 	digitalWrite(STEP_PIN,LOW);
 	step_running_state=Stop;
@@ -606,8 +658,11 @@ void Stepper_Stop(void){
 	step_last_pulse_hz=0;
 	Stepper_ResetMoveTracking();
 	Stepper_SetMicrosteps(MOVE_RUN_MICROSTEPS);
-	Stepper_RestoreRunCurrent();
 	Stepper_SetSilentMode();
+	if(was_running||(step_driver_enabled&&!step_idle_timer_active)){
+		step_idle_start_ms=millis();
+		step_idle_timer_active=true;
+	}
 }
 
 void Stepper_ResetMoveTracking(void){
@@ -633,7 +688,6 @@ void Stepper_UpdateSpeed(Motor_State state){
 	step_target_speed_mm_s=StepperEffectiveSpeedMmS();
 	if(state==Stop||step_target_speed_mm_s<=0){
 		Stepper_Stop();
-		WRITE_EN_PIN(1);
 		return;
 	}
 
@@ -646,7 +700,7 @@ void Stepper_UpdateSpeed(Motor_State state){
 	}
 	step_last_update_ms=millis();
 	Stepper_SetTimerFrequency();
-	WRITE_EN_PIN(0);
+	Stepper_EnableDriver();
 	step_timer.resume();
 }
 
@@ -804,7 +858,9 @@ void TMC_ApplyExpectedConfig(void){
 	driver.mstep_reg_select(true);
 	driver.toff(5);
 	driver.intpol(true);
-	driver.rms_current(TMC_ExpectedCurrentMa());
+	TMC_SetRunAndHoldCurrent(TMC_ExpectedCurrentMa());
+	driver.TPOWERDOWN(TMC_POWERDOWN_DELAY);
+	driver.iholddelay(TMC_HOLD_DELAY);
 	Stepper_SetMicrosteps(StepperExpectedMicrosteps(),true);
 	TMC_WriteSpreadCycle(step_high_speed_mode);
 	driver.pwm_autoscale(true);
@@ -906,6 +962,8 @@ void buffer_motor_init(){
   pinMode(STEP_PIN, OUTPUT);
   pinMode(DIR_PIN, OUTPUT);
   digitalWrite(EN_PIN, LOW);      // Enable driver in hardware
+  step_driver_enabled=true;
+  step_idle_timer_active=false;
   digitalWrite(STEP_PIN, LOW);
   digitalWrite(DIR_PIN, FORWARD);
 
@@ -921,14 +979,15 @@ void buffer_motor_init(){
   driver.mstep_reg_select(true);   // Use UART microstep setting
   driver.toff(5);                  // Enables driver in software
   driver.intpol(true);
-  driver.rms_current(I_CURRENT);   // Set motor RMS current
+  TMC_SetRunAndHoldCurrent(I_CURRENT);
+  driver.TPOWERDOWN(TMC_POWERDOWN_DELAY);
+  driver.iholddelay(TMC_HOLD_DELAY);
   Stepper_SetMicrosteps(MOVE_RUN_MICROSTEPS,true);
   TMC_WriteSpreadCycle(false);
   step_high_speed_mode=false;
   step_boost_current_active=false;
   driver.pwm_autoscale(true);
   Stepper_Stop();
-  WRITE_EN_PIN(1);
  
 }
 
@@ -992,7 +1051,6 @@ void motor_control(void)
 		last_motor_state=Stop;
 		is_front=false;
 		front_time=0;
-		WRITE_EN_PIN(1);
 		return;
 	}
 
@@ -1071,11 +1129,9 @@ void motor_control(void)
 		is_front=false;
 		front_time=0;
 		if(key1_press_flag&&key2_press_flag){
-			WRITE_EN_PIN(1);
 			return;
 		}
 		is_error=false;
-		WRITE_EN_PIN(1);//失能
 		is_error=true;
 
 	}
@@ -1103,11 +1159,9 @@ void motor_control(void)
 		is_front=false;
 		front_time=0;
 		if(key1_press_flag&&key2_press_flag){
-			WRITE_EN_PIN(1);
 			return;
 		}
 		is_error=false;
-		WRITE_EN_PIN(1);
 	}
 
 	if(immediate_position==0){
@@ -1118,7 +1172,6 @@ void motor_control(void)
 			last_motor_state=Stop;
 			is_front=false;
 			front_time=0;
-			WRITE_EN_PIN(1);
 			return;
 		}
 	}
@@ -1159,7 +1212,6 @@ void motor_control(void)
 			if(!timeout_error){
 				is_error=false;
 			}
-			WRITE_EN_PIN(1);
 
 			return;//无耗材，结束
 		}
@@ -1185,7 +1237,6 @@ void motor_control(void)
 		//停止电机
 		Stepper_Stop();
 		motor_state=Stop;
-		WRITE_EN_PIN(1);
 		return ;
 	}
 
@@ -1245,7 +1296,6 @@ void motor_control(void)
 		case Stop://停止
 		{
 			Stepper_Stop();
-			WRITE_EN_PIN(1);		
 
 		}break;
 		case Back://向后
@@ -1608,6 +1658,8 @@ void USB_Serial_Analys(void){
 				Serial.println("allow_error="+String(blockage_detect.allow_error));
 				Serial.println("I_CURRENT="+String(I_CURRENT));
 				Serial.println("boost_current="+String(StepperBoostCurrentMa()));
+				Serial.println("hold_current="+String(HOLD_CURRENT_MA));
+				Serial.println("idle_disable(ms)="+String(MOTOR_IDLE_DISABLE_MS));
 				Serial.println("fast_mode="+String(fast_mode_enabled));
 				Serial.println("DUANLIAO_OUT_STATE="+String(buffer_para.DUANLIAO_OUT_STATE));
 			}			
@@ -1696,10 +1748,10 @@ void USB_Serial_Analys(void){
 				buffer_para.I_CURRENT=num;
 				I_CURRENT=num;
 				if(step_boost_current_active){
-					driver.rms_current(StepperBoostCurrentMa());
+					TMC_SetRunAndHoldCurrent(StepperBoostCurrentMa());
 				}
 				else{
-					driver.rms_current(I_CURRENT);
+					TMC_SetRunAndHoldCurrent(I_CURRENT);
 				}
 				EEPROM.put(0, buffer_para);
 				serial_buf="";

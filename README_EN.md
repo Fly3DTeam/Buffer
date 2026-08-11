@@ -42,6 +42,8 @@ Chinese documentation is available in [README.md](README.md).
 - Direction is controlled by buffer sensors, buttons, or external forward/back signals.
 - If the feeder moves more than `100mm` without a position change, boost mode raises the target speed to `100mm/s`.
 - Before boost, the firmware raises current and switches to high-speed mode. After stopping, it restores normal current and silent mode.
+- After the motor stops, the driver remains enabled. `IRUN` keeps the configured run current while `IHOLD` is independently set to `50mA`; the TMC automatically switches to holding current at standstill.
+- If no motion restarts for `30s` after stopping, the firmware disables the driver. It is enabled again immediately before the next automatic or manual move.
 - Boost is disabled when there is no filament.
 - The firmware uses 16 microsteps everywhere to reduce STEP interrupt load and improve stability at `100mm/s`.
 
