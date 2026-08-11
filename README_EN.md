@@ -53,7 +53,7 @@ Chinese documentation is available in [README.md](README.md).
 - Double-click either button to pause automatic operation and stop the motor.
 - Hold the back button for manual retraction, or hold the forward button for manual feeding.
 - Press both buttons together to enable or disable fast mode immediately. Both buttons must be released before it can be toggled again.
-- Fast mode is enabled by default. When enabled, movement beyond `100mm` may boost to `100mm/s`. Disabling it prevents automatic boost and immediately exits an active boost.
+- Fast mode is enabled by default. When enabled, movement beyond `100mm` may boost to `100mm/s`. When fast mode is disabled or the boost condition ends, the target returns to the normal `speed` and the actual speed ramps down smoothly using the configured `accel` value. Boost current and high-speed chopper mode remain active until deceleration finishes, avoiding a noisy driver-mode transition at high speed.
 - Enabling fast mode is confirmed by five clear flashes (`200ms` on and `200ms` off); disabling it is confirmed by a `2s` solid light. Each confirmation runs once before the normal status indication resumes. A TMC fault remains a repeating triple-fast-flash pattern.
 
 ## Filament Runout

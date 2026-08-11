@@ -83,6 +83,7 @@ static HardwareTimer timer(TIM6);//超时出错
 static HardwareTimer step_timer(TIM3);//STEP pulse output
 static volatile uint32_t step_pulse_count=0;
 static bool step_boost_active=false;
+static bool step_boost_decelerating=false;
 static bool step_high_speed_mode=false;
 static bool step_boost_current_active=false;
 static bool step_driver_enabled=false;
@@ -213,6 +214,7 @@ void Stepper_SetHighSpeedMode(void);
 void Stepper_SetSilentMode(void);
 void Stepper_SetBoostCurrent(void);
 void Stepper_RestoreRunCurrent(void);
+void Stepper_FinishBoostDeceleration(void);
 uint8_t TMC_CurrentScaleForMa(uint16_t current_ma);
 void TMC_SetRunAndHoldCurrent(uint16_t run_current_ma);
 void Stepper_EnableDriver(void);
@@ -244,7 +246,7 @@ float StepperMotorStepsPerMm(void){
 }
 
 uint16_t StepperExpectedMicrosteps(void){
-	return step_boost_active?MOVE_BOOST_MICROSTEPS:MOVE_RUN_MICROSTEPS;
+	return (step_boost_active||step_boost_decelerating)?MOVE_BOOST_MICROSTEPS:MOVE_RUN_MICROSTEPS;
 }
 
 void Stepper_SetMicrosteps(uint16_t microsteps,bool force){
@@ -660,6 +662,16 @@ void Stepper_RestoreRunCurrent(void){
 	}
 }
 
+void Stepper_FinishBoostDeceleration(void){
+	if(!step_boost_decelerating){
+		return;
+	}
+	step_boost_decelerating=false;
+	Stepper_SetMicrosteps(MOVE_RUN_MICROSTEPS);
+	Stepper_RestoreRunCurrent();
+	Stepper_SetSilentMode();
+}
+
 void Stepper_Stop(void){
 	bool was_running=step_running_state!=Stop;
 	step_timer.pause();
@@ -671,6 +683,7 @@ void Stepper_Stop(void){
 	step_last_pulse_hz=0;
 	Stepper_ResetMoveTracking();
 	Stepper_SetMicrosteps(MOVE_RUN_MICROSTEPS);
+	Stepper_RestoreRunCurrent();
 	Stepper_SetSilentMode();
 	if(was_running||(step_driver_enabled&&!step_idle_timer_active)){
 		step_idle_start_ms=millis();
@@ -681,6 +694,7 @@ void Stepper_Stop(void){
 void Stepper_ResetMoveTracking(void){
 	step_pulse_count=0;
 	step_boost_active=false;
+	step_boost_decelerating=false;
 }
 
 void Stepper_SetTimerFrequency(void){
@@ -751,20 +765,31 @@ void Stepper_ApplyAcceleration(void){
 	}
 
 	Stepper_SetTimerFrequency();
+	if(step_boost_decelerating&&step_current_speed_mm_s<=step_target_speed_mm_s){
+		// 速度已经回到普通速度后，再恢复普通电流和静音斩波模式，
+		// 避免高速减速过程中切换驱动模式产生明显噪声。
+		Stepper_FinishBoostDeceleration();
+	}
 }
 
 void Stepper_DisableBoost(Motor_State state){
 	if(!step_boost_active){
 		return;
 	}
-	step_timer.pause();
 	step_boost_active=false;
+	if(state!=Stop&&step_running_state!=Stop){
+		// 保留高速电流和斩波模式，只把目标恢复为普通速度；后续由
+		// Stepper_ApplyAcceleration() 按 acceleration 平滑减速，并在
+		// 降到普通速度后再恢复普通电流和静音模式。
+		step_boost_decelerating=true;
+		step_target_speed_mm_s=SPEED;
+		step_last_update_ms=millis();
+		return;
+	}
+	step_boost_decelerating=false;
 	Stepper_SetMicrosteps(MOVE_RUN_MICROSTEPS);
 	Stepper_RestoreRunCurrent();
 	Stepper_SetSilentMode();
-	if(state!=Stop&&step_running_state!=Stop){
-		Stepper_UpdateSpeed(state);
-	}
 }
 
 void Stepper_CheckBoost(Motor_State state,bool boost_allowed){
@@ -783,6 +808,7 @@ void Stepper_CheckBoost(Motor_State state,bool boost_allowed){
 	}
 	if(step_pulse_count>=StepperBoostPulseThreshold()){
 		step_timer.pause();
+		step_boost_decelerating=false;
 		Stepper_SetBoostCurrent();
 		Stepper_SetHighSpeedMode();
 		step_boost_active=true;
