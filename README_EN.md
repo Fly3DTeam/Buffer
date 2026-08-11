@@ -52,9 +52,9 @@ Chinese documentation is available in [README.md](README.md).
 - Single-click either button to clear the pause/error state and resume automatic operation.
 - Double-click either button to pause automatic operation and stop the motor.
 - Hold the back button for manual retraction, or hold the forward button for manual feeding.
-- Hold both buttons for 2 seconds to enable or disable fast mode. Both buttons must be released before it can be toggled again.
+- Press both buttons together to enable or disable fast mode immediately. Both buttons must be released before it can be toggled again.
 - Fast mode is enabled by default. When enabled, movement beyond `100mm` may boost to `100mm/s`. Disabling it prevents automatic boost and immediately exits an active boost.
-- Enabling fast mode is confirmed by three short flashes; disabling it is confirmed by two slow flashes. The status LED then resumes its normal indication.
+- Enabling fast mode is confirmed by five clear flashes (`200ms` on and `200ms` off); disabling it is confirmed by a `2s` solid light. Each confirmation runs once before the normal status indication resumes. A TMC fault remains a repeating triple-fast-flash pattern.
 
 ## Filament Runout
 
@@ -67,15 +67,28 @@ Chinese documentation is available in [README.md](README.md).
 ## Timeout Recovery
 
 - If forward feeding exceeds the configured `timeout`, the firmware enters timeout error and stops.
-- After a timeout error, reloading filament automatically clears the timeout error and resumes operation.
+- A single click, manual button control, a dual-button fast-mode toggle, or any filament-state change (reload/removal) clears a timeout error and resumes operation.
+- The same recovery actions also clear pause mode; double-clicking either individual button still explicitly enters pause mode.
 - Other manually triggered errors are not cleared as timeout errors.
 
 ## Status LED
 
-- MDM not connected: slow blink.
-- MDM connected: double blink.
-- Blockage: fast blink.
-- Repeated TMC communication/status fault: triple fast flash followed by a pause.
+All `ERR_LED / PA15` indications are listed below:
+
+| Indication | Timing | Repeats | Meaning |
+| --- | --- | --- | --- |
+| Five clear flashes | `200ms` on and `200ms` off, five times | No | Fast mode enabled successfully |
+| Solid on, then off | On for `2s`, then off for `500ms` | No | Fast mode disabled successfully |
+| Triple fast flash and pause | Each on/off interval is `80ms`, followed by `700ms` off | Yes | Repeated TMC communication, configuration, or driver-status fault |
+| Continuous fast flash | Toggles every `50ms` | Yes | Filament blockage detected |
+| Continuous ultra-fast flash | Toggles every `25ms` | Yes | Forward motion exceeded `timeout` |
+| Solid on | Continuously on | Yes | Paused by double-clicking a button |
+| Double flash | `100ms` on, `100ms` off, `100ms` on, then `600ms` off | Yes | Normal operation with an MDM module connected |
+| Slow blink | `500ms` on and `500ms` off | Yes | Normal operation without an MDM module |
+
+When multiple states are active, the display priority is: fast-mode confirmation → TMC fault → blockage → forward timeout → pause → MDM connected → normal without MDM. After a one-shot fast-mode confirmation finishes, the LED resumes the repeating indication for the current state.
+
+`START_LED / PA8` does not use blink codes. It is on during normal operation with filament and turns off after runout is confirmed. During the `10s` runout delay, it remains in the normal working state.
 
 ## Serial Commands
 

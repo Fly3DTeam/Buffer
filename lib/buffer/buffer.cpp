@@ -71,12 +71,12 @@ static const uint32_t TMC_STATUS_INTERVAL_MS = 1000;
 static const uint8_t TMC_MAX_BAD_STATUS_COUNT = 3;
 static const bool TMC2225_GCONF_SPREADCYCLE_INVERT_WRITE = true;
 static const uint8_t HALL_EVENT_QUEUE_SIZE = 16;
-static const uint32_t DUAL_KEY_HOLD_MS = 2000;
 static const uint8_t FAST_MODE_NOTICE_NONE = 0;
 static const uint8_t FAST_MODE_NOTICE_ENABLED = 1;
 static const uint8_t FAST_MODE_NOTICE_DISABLED = 2;
 bool is_error=false;//错误标志位，如果连续60s推送耗材没停过，则认为错误
 static volatile bool timeout_error=false;
+static bool pause_mode_active=false;
 String serial_buf;
 
 static HardwareTimer timer(TIM6);//超时出错
@@ -117,7 +117,6 @@ volatile uint8_t key2_press_cnt=0;
 static bool fast_mode_enabled=true;
 static bool dual_key_chord_active=false;
 static bool dual_key_chord_triggered=false;
-static uint32_t dual_key_chord_start_ms=0;
 static uint8_t fast_mode_notice=FAST_MODE_NOTICE_NONE;
 static uint32_t fast_mode_notice_start_ms=0;
 
@@ -231,6 +230,7 @@ void Hall_Sensor_ClearQueue(void);
 uint8_t Hall_Sensor_ConsumeImmediate(void);
 bool Hall_Sensor_ImmediatePending(void);
 bool Dual_Key_Update(uint32_t nowTime);
+void ClearTimeoutAndPause(void);
 // void Buffer_S3_IT_Callback(void);
 // void Buffer_S2_IT_Callback(void);
 // void Buffer_S1_IT_Callback(void);
@@ -387,16 +387,16 @@ void Status_LED_Update(uint32_t nowTime){
 
 	if(fast_mode_notice!=FAST_MODE_NOTICE_NONE){
 		uint32_t elapsed=nowTime-fast_mode_notice_start_ms;
-		uint32_t duration=fast_mode_notice==FAST_MODE_NOTICE_ENABLED?600:1200;
+		uint32_t duration=fast_mode_notice==FAST_MODE_NOTICE_ENABLED?2000:2500;
 
 		if(elapsed<duration){
 			if(fast_mode_notice==FAST_MODE_NOTICE_ENABLED){
-				// 快速模式开启成功：三次短闪（100ms亮，100ms灭）
-				digitalWrite(ERR_LED,((elapsed/100)%2)==0?HIGH:LOW);
+				// 快速模式开启成功：五次明显闪烁（200ms亮，200ms灭）。
+				digitalWrite(ERR_LED,((elapsed/200)%2)==0?HIGH:LOW);
 			}
 			else{
-				// 快速模式关闭成功：两次慢闪（300ms亮，300ms灭）
-				digitalWrite(ERR_LED,((elapsed/300)%2)==0?HIGH:LOW);
+				// 快速模式关闭成功：长亮2s，再熄灭500ms。
+				digitalWrite(ERR_LED,elapsed<2000?HIGH:LOW);
 			}
 			return;
 		}
@@ -411,6 +411,8 @@ void Status_LED_Update(uint32_t nowTime){
 	uint8_t mode=3;
 	if(tmc_status_error) mode=0;
 	else if(blockage_detect.blockage_flag) mode=1;
+	else if(timeout_error) mode=5;
+	else if(pause_mode_active) mode=4;
 	else if(connet_mdm_flag) mode=2;
 
 	if(mode!=last_mode){
@@ -485,6 +487,17 @@ void Status_LED_Update(uint32_t nowTime){
 		}
 		else if(led_state==4&&nowTime-lastToggleTime>=600){
 			led_state=0;
+		}
+	}
+	else if(mode==4){
+		// 手动暂停：状态灯常亮。
+		digitalWrite(ERR_LED,HIGH);
+	}
+	else if(mode==5){
+		// 前进超时：每25ms翻转一次，超快闪烁。
+		if(nowTime-lastToggleTime>=25){
+			lastToggleTime=nowTime;
+			digitalToggle(ERR_LED);
 		}
 	}
 	else if(nowTime-lastToggleTime>=500){
@@ -789,10 +802,10 @@ bool Dual_Key_Update(uint32_t nowTime){
 		}
 		dual_key_chord_active=true;
 		dual_key_chord_triggered=false;
-		dual_key_chord_start_ms=nowTime;
 	}
 
-	if(both_down&&!dual_key_chord_triggered&&nowTime-dual_key_chord_start_ms>=DUAL_KEY_HOLD_MS){
+	if(both_down&&!dual_key_chord_triggered){
+		ClearTimeoutAndPause();
 		fast_mode_enabled=!fast_mode_enabled;
 		dual_key_chord_triggered=true;
 		fast_mode_notice=fast_mode_enabled?FAST_MODE_NOTICE_ENABLED:FAST_MODE_NOTICE_DISABLED;
@@ -826,6 +839,16 @@ bool Dual_Key_Update(uint32_t nowTime){
 	}
 
 	return true;
+}
+
+void ClearTimeoutAndPause(void){
+	noInterrupts();
+	timeout_error=false;
+	is_error=false;
+	is_front=false;
+	front_time=0;
+	interrupts();
+	pause_mode_active=false;
 }
 
 void Stepper_Run(Motor_State state){
@@ -1045,16 +1068,10 @@ void motor_control(void)
 	bool dual_key_gesture_active=Dual_Key_Update(cur_times);
 
 	uint8_t immediate_position=Hall_Sensor_ConsumeImmediate();
-	if(immediate_position==2||buffer.buffer1_pos2_sensor_state){
-		Stepper_Stop();
-		motor_state=Stop;
-		last_motor_state=Stop;
-		is_front=false;
-		front_time=0;
-		return;
+	bool stop_position_pending=immediate_position==2||buffer.buffer1_pos2_sensor_state;
+	if(!stop_position_pending){
+		Stepper_ApplyAcceleration();
 	}
-
-	Stepper_ApplyAcceleration();
 
 	//通知信号关闭
 	if(inform_flag&&cur_times-inform_times>=3000){
@@ -1073,9 +1090,11 @@ void motor_control(void)
 			digitalWrite(EXTENSION_PIN2,LOW);
 			inform_times=millis();
 			inform_flag=true;
-			is_error=false;
+			ClearTimeoutAndPause();
 		}
 		else if(key1_press_cnt>=2){//短按2次或两次以上后松开
+			ClearTimeoutAndPause();
+			pause_mode_active=true;
 			is_error=true;
 		}
 
@@ -1091,9 +1110,11 @@ void motor_control(void)
 			digitalWrite(EXTENSION_PIN1,HIGH);
 			inform_times=millis();
 			inform_flag=true;
-			is_error=false;
+			ClearTimeoutAndPause();
 		}
 		else if(key2_press_cnt>=2){//短按2次或两次以上后松开
+			ClearTimeoutAndPause();
+			pause_mode_active=true;
 			is_error=true;
 		}
 		
@@ -1101,12 +1122,22 @@ void motor_control(void)
 
 	}	
 
+	// 停止位也要先处理单击/双击，否则电机位于停止位时无法切换暂停状态。
+	if(stop_position_pending){
+		Stepper_Stop();
+		motor_state=Stop;
+		last_motor_state=Stop;
+		is_front=false;
+		front_time=0;
+		return;
+	}
+
 	//按键1按下后长按
 	bool key1_long_request=!dual_key_gesture_active&&key1_press_flag&&!key2_press_flag&&cur_times-key1_press_times>=500;
 	bool key2_long_request=!dual_key_gesture_active&&key2_press_flag&&!key1_press_flag&&cur_times-key2_press_times>=500;
 	if(immediate_position==0&&(key1_long_request||digitalRead(BACK_SIGNAL_PIN)==LOW)&&!buffer.buffer1_pos2_sensor_state)
 	{
-		
+		ClearTimeoutAndPause();
 		Stepper_Stop();
 		Stepper_Run(Back);
 		while((key1_press_flag&&!key2_press_flag)||digitalRead(BACK_SIGNAL_PIN)==LOW){
@@ -1131,13 +1162,12 @@ void motor_control(void)
 		if(key1_press_flag&&key2_press_flag){
 			return;
 		}
-		is_error=false;
-		is_error=true;
+		ClearTimeoutAndPause();
 
 	}
 	else if(immediate_position==0&&(key2_long_request||digitalRead(FRONT_SIGNAL_PIN)==LOW)&&!buffer.buffer1_pos2_sensor_state)//按键2按下后长按
 	{
-
+		ClearTimeoutAndPause();
 		Stepper_Stop();
 		Stepper_Run(Forward);
 		while((key2_press_flag&&!key1_press_flag)||digitalRead(FRONT_SIGNAL_PIN)==LOW){
@@ -1161,7 +1191,7 @@ void motor_control(void)
 		if(key1_press_flag&&key2_press_flag){
 			return;
 		}
-		is_error=false;
+		ClearTimeoutAndPause();
 	}
 
 	if(immediate_position==0){
@@ -1177,16 +1207,11 @@ void motor_control(void)
 	}
 	
 	bool no_material = IsNoMaterial();
-	bool material_reloaded=last_no_material&&!no_material;
+	bool material_state_changed=last_no_material!=no_material;
 	last_no_material=no_material;
 
-	if(material_reloaded&&timeout_error){
-		noInterrupts();
-		timeout_error=false;
-		interrupts();
-		is_error=false;
-		is_front=false;
-		front_time=0;
+	if(material_state_changed&&(timeout_error||pause_mode_active)){
+		ClearTimeoutAndPause();
 	}
 
 	if(no_material){
@@ -1210,6 +1235,7 @@ void motor_control(void)
 			is_front=false;
 			front_time=0;
 			if(!timeout_error){
+				pause_mode_active=false;
 				is_error=false;
 			}
 
@@ -1337,6 +1363,7 @@ void timer_it_callback(){
 		if (front_time > timeout)
 		{ // 如果超时
 			timeout_error = true;
+			pause_mode_active=false;
 			is_error = true;
 		}
 	}
@@ -1661,6 +1688,8 @@ void USB_Serial_Analys(void){
 				Serial.println("hold_current="+String(HOLD_CURRENT_MA));
 				Serial.println("idle_disable(ms)="+String(MOTOR_IDLE_DISABLE_MS));
 				Serial.println("fast_mode="+String(fast_mode_enabled));
+				Serial.println("pause_mode="+String(pause_mode_active));
+				Serial.println("timeout_error="+String(timeout_error));
 				Serial.println("DUANLIAO_OUT_STATE="+String(buffer_para.DUANLIAO_OUT_STATE));
 			}			
 			else if(strstr(serial_buf.c_str(),"scale")){
