@@ -148,6 +148,7 @@ struct Buffer_Parameter{
 	bool DUANLIAO_OUT_STATE;
 	uint16_t magic_number;
 	float acceleration;
+	bool tpu_mode;
 };
 
 extern void buffer_sensor_init();

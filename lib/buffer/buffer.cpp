@@ -26,7 +26,7 @@
 
 
 #include "buffer.h"
-#define VERSION "2.0.2"
+#define VERSION "2.0.3"
 
 //GPIO输入
 #define SIGNAL_COUNT_READ_DIR_IO()	(SIGNAL_COUNT_DIR_GPIO_Port -> IDR & SIGNAL_COUNT_DIR_Pin)
@@ -51,9 +51,11 @@ uint32_t timeout=60000;//超时时间，单位：ms;
 static const uint32_t FILAMENT_RUNOUT_DELAY_MS = 10000;
 static const float DEFAULT_SPEED_MM_S = 30.0f;
 static const float DEFAULT_ACCELERATION_MM_S2 = 500.0f;
-static const uint16_t BUFFER_MAGIC_NUMBER = 0x55AC;
+static const uint16_t BUFFER_MAGIC_NUMBER = 0x55AD;
+static const uint16_t BUFFER_LEGACY_ACCEL_MAGIC_NUMBER = 0x55AC;
 static const uint16_t BUFFER_LEGACY_RPM_MAGIC_NUMBER = 0x55AA;
 static const uint16_t BUFFER_LEGACY_MM_S_MAGIC_NUMBER = 0x55AB;
+static const bool DEFAULT_TPU_MODE = false;
 static const float BMG_GEAR_RATIO = 3.0f;
 static const float BMG_DRIVE_CIRCUMFERENCE_MM = 22.93f;
 static const float BMG_MOTOR_STEPS_PER_MM = 200.0f*Move_Divide_NUM*BMG_GEAR_RATIO/BMG_DRIVE_CIRCUMFERENCE_MM;
@@ -62,7 +64,8 @@ static const uint16_t MOVE_BOOST_MICROSTEPS = MOVE_RUN_MICROSTEPS;
 static const float MOVE_BOOST_DISTANCE_MM = 100.0f;
 static const float MOVE_BOOST_SPEED_MM_S = 100.0f;
 static const float BOOST_CURRENT_SCALE = 1.2f;
-static const uint16_t HOLD_CURRENT_MA = 50;
+// IHOLD=0在StealthChop下可用于自由滑行/被动制动；1是最小非零保持档位。
+static const uint8_t MIN_NONZERO_HOLD_CURRENT_SCALE = 1;
 static const uint8_t TMC_POWERDOWN_DELAY = 20;
 static const uint8_t TMC_HOLD_DELAY = 1;
 static const uint32_t MOTOR_IDLE_DISABLE_MS = 30000;
@@ -71,9 +74,9 @@ static const uint32_t TMC_STATUS_INTERVAL_MS = 1000;
 static const uint8_t TMC_MAX_BAD_STATUS_COUNT = 3;
 static const bool TMC2225_GCONF_SPREADCYCLE_INVERT_WRITE = true;
 static const uint8_t HALL_EVENT_QUEUE_SIZE = 16;
-static const uint8_t FAST_MODE_NOTICE_NONE = 0;
-static const uint8_t FAST_MODE_NOTICE_ENABLED = 1;
-static const uint8_t FAST_MODE_NOTICE_DISABLED = 2;
+static const uint8_t MATERIAL_MODE_NOTICE_NONE = 0;
+static const uint8_t MATERIAL_MODE_NOTICE_NON_TPU = 1;
+static const uint8_t MATERIAL_MODE_NOTICE_TPU = 2;
 bool is_error=false;//错误标志位，如果连续60s推送耗材没停过，则认为错误
 static volatile bool timeout_error=false;
 static bool pause_mode_active=false;
@@ -116,10 +119,12 @@ volatile uint32_t key2_release_times=0;
 volatile uint8_t key1_press_cnt=0;
 volatile uint8_t key2_press_cnt=0;
 static bool fast_mode_enabled=true;
+static bool tpu_mode_enabled=DEFAULT_TPU_MODE;
 static bool dual_key_chord_active=false;
 static bool dual_key_chord_triggered=false;
-static uint8_t fast_mode_notice=FAST_MODE_NOTICE_NONE;
-static uint32_t fast_mode_notice_start_ms=0;
+static uint8_t material_mode_notice=MATERIAL_MODE_NOTICE_NONE;
+static uint32_t material_mode_notice_start_ms=0;
+static bool filament_led_active=false;
 
 uint32_t inform_flag=false;
 uint32_t inform_times=0;
@@ -191,6 +196,7 @@ void Pulse_Receive_Init(void);
 void Blockage_Detect(void);
 void Main_Logic(void);
 void Status_LED_Update(uint32_t nowTime);
+void Filament_LED_Update(void);
 float fastAtof(const char *s);
 void Signal_Dir_Init(void);
 bool IsNoMaterial(void);
@@ -215,10 +221,10 @@ void Stepper_SetSilentMode(void);
 void Stepper_SetBoostCurrent(void);
 void Stepper_RestoreRunCurrent(void);
 void Stepper_FinishBoostDeceleration(void);
-uint8_t TMC_CurrentScaleForMa(uint16_t current_ma);
 void TMC_SetRunAndHoldCurrent(uint16_t run_current_ma);
 void Stepper_EnableDriver(void);
 void Stepper_IdleDisableTask(uint32_t nowTime);
+void ApplyMaterialMode(uint32_t nowTime);
 void Stepper_Run(Motor_State state);
 void Stepper_Stop(void);
 bool TMC_CrcOk(void);
@@ -281,15 +287,23 @@ void buffer_parameter_init(Buffer_Parameter &buffer_para){
 		}
 		buffer_para.acceleration=DEFAULT_ACCELERATION_MM_S2;
 		buffer_para.magic_number=BUFFER_MAGIC_NUMBER;
+		buffer_para.tpu_mode=DEFAULT_TPU_MODE;
 		EEPROM.put(0, buffer_para);
 	}
 	else if(buffer_para.magic_number==BUFFER_LEGACY_MM_S_MAGIC_NUMBER){
 		buffer_para.acceleration=DEFAULT_ACCELERATION_MM_S2;
 		buffer_para.magic_number=BUFFER_MAGIC_NUMBER;
+		buffer_para.tpu_mode=DEFAULT_TPU_MODE;
+		EEPROM.put(0, buffer_para);
+	}
+	else if(buffer_para.magic_number==BUFFER_LEGACY_ACCEL_MAGIC_NUMBER){
+		// 2.0.2及以前没有耗材模式字段，升级后默认使用非TPU模式。
+		buffer_para.magic_number=BUFFER_MAGIC_NUMBER;
+		buffer_para.tpu_mode=DEFAULT_TPU_MODE;
 		EEPROM.put(0, buffer_para);
 	}
 	else if(buffer_para.magic_number!=BUFFER_MAGIC_NUMBER){
-		buffer_para=Buffer_Parameter{DEFAULT_TIMEOUT,DEFAULT_STEPS,DEFAULT_ENCODER_LENGTH,DEFAULT_ALLOW_ERROR_SCALE,DEFAULT_SPEED_MM_S,I_CURRENT,DUANLIAO_OUT_STATE,BUFFER_MAGIC_NUMBER,DEFAULT_ACCELERATION_MM_S2};
+		buffer_para=Buffer_Parameter{DEFAULT_TIMEOUT,DEFAULT_STEPS,DEFAULT_ENCODER_LENGTH,DEFAULT_ALLOW_ERROR_SCALE,DEFAULT_SPEED_MM_S,I_CURRENT,DUANLIAO_OUT_STATE,BUFFER_MAGIC_NUMBER,DEFAULT_ACCELERATION_MM_S2,DEFAULT_TPU_MODE};
 		EEPROM.put(0, buffer_para);
 	}
 	timeout=buffer_para.timeout;
@@ -320,6 +334,8 @@ void buffer_parameter_init(Buffer_Parameter &buffer_para){
 		buffer_para.acceleration=acceleration;
 		EEPROM.put(0, buffer_para);
 	}
+	tpu_mode_enabled=buffer_para.tpu_mode;
+	fast_mode_enabled=!tpu_mode_enabled;
 }
 
 void buffer_init(){
@@ -341,8 +357,10 @@ void buffer_init(){
   buffer_parameter_init(buffer_para);
   Pulse_Receive_Init();
   buffer_sensor_init();
+  filament_led_active=!IsNoMaterial();
   buffer_motor_init();
   Signal_Dir_Init();
+	Serial.println(tpu_mode_enabled?"material mode: TPU":"material mode: non-TPU");
 //   delay(1000);
 
   timer.pause();
@@ -364,6 +382,7 @@ void buffer_loop()
 		read_sensor_state();
 		if(connet_mdm_flag) Blockage_Detect();
 		motor_control();
+		Filament_LED_Update();
 		Stepper_IdleDisableTask(millis());
 		TMC_Monitor_Task();
 		USB_Serial_Analys();
@@ -387,23 +406,23 @@ void Status_LED_Update(uint32_t nowTime){
 	static uint8_t led_state=0;
 	static uint8_t last_mode=0xff;
 
-	if(fast_mode_notice!=FAST_MODE_NOTICE_NONE){
-		uint32_t elapsed=nowTime-fast_mode_notice_start_ms;
-		uint32_t duration=fast_mode_notice==FAST_MODE_NOTICE_ENABLED?2000:2500;
+	if(material_mode_notice!=MATERIAL_MODE_NOTICE_NONE){
+		uint32_t elapsed=nowTime-material_mode_notice_start_ms;
+		uint32_t duration=material_mode_notice==MATERIAL_MODE_NOTICE_NON_TPU?2000:2500;
 
 		if(elapsed<duration){
-			if(fast_mode_notice==FAST_MODE_NOTICE_ENABLED){
-				// 快速模式开启成功：五次明显闪烁（200ms亮，200ms灭）。
+			if(material_mode_notice==MATERIAL_MODE_NOTICE_NON_TPU){
+				// 进入非TPU模式：五次明显闪烁（200ms亮，200ms灭）。
 				digitalWrite(ERR_LED,((elapsed/200)%2)==0?HIGH:LOW);
 			}
 			else{
-				// 快速模式关闭成功：长亮2s，再熄灭500ms。
+				// 进入TPU模式：长亮2s，再熄灭500ms。
 				digitalWrite(ERR_LED,elapsed<2000?HIGH:LOW);
 			}
 			return;
 		}
 
-		fast_mode_notice=FAST_MODE_NOTICE_NONE;
+		material_mode_notice=MATERIAL_MODE_NOTICE_NONE;
 		last_mode=0xff;
 		led_state=0;
 		lastToggleTime=nowTime;
@@ -505,6 +524,20 @@ void Status_LED_Update(uint32_t nowTime){
 	else if(nowTime-lastToggleTime>=500){
 		lastToggleTime=nowTime;
 		digitalToggle(ERR_LED);
+	}
+}
+
+void Filament_LED_Update(void){
+	if(!filament_led_active){
+		digitalWrite(START_LED,LOW);
+		return;
+	}
+	if(tpu_mode_enabled){
+		// TPU模式下耗材灯与状态灯反相，形成交替闪烁。
+		digitalWrite(START_LED,digitalRead(ERR_LED)==HIGH?LOW:HIGH);
+	}
+	else{
+		digitalWrite(START_LED,HIGH);
 	}
 }
 
@@ -616,24 +649,11 @@ void Stepper_SetBoostCurrent(void){
 	}
 }
 
-uint8_t TMC_CurrentScaleForMa(uint16_t current_ma){
-	// vsense由运行电流决定；在相同量程下单独计算IHOLD的电流档位。
-	float v_fs=driver.vsense()?0.180f:0.325f;
-	float cs_value=32.0f*1.41421f*(current_ma/1000.0f)*(R_SENSE+0.02f)/v_fs-1.0f;
-	int32_t current_scale=(int32_t)(cs_value+0.5f);
-	if(current_scale<0){
-		current_scale=0;
-	}
-	else if(current_scale>31){
-		current_scale=31;
-	}
-	return (uint8_t)current_scale;
-}
-
 void TMC_SetRunAndHoldCurrent(uint16_t run_current_ma){
-	// rms_current负责设置IRUN并选择vsense，IHOLD再独立设置为50mA档位。
+	// rms_current负责设置IRUN并选择vsense；IHOLD=1是确保线圈仍有保持
+	// 电流的最小档位，对应当前满量程的2/32。
 	driver.rms_current(run_current_ma,1.0f);
-	driver.ihold(TMC_CurrentScaleForMa(HOLD_CURRENT_MA));
+	driver.ihold(MIN_NONZERO_HOLD_CURRENT_SCALE);
 }
 
 void Stepper_EnableDriver(void){
@@ -645,7 +665,7 @@ void Stepper_EnableDriver(void){
 }
 
 void Stepper_IdleDisableTask(uint32_t nowTime){
-	if(step_running_state!=Stop||!step_driver_enabled||!step_idle_timer_active){
+	if(!tpu_mode_enabled||step_running_state!=Stop||!step_driver_enabled||!step_idle_timer_active){
 		return;
 	}
 	if(nowTime-step_idle_start_ms>=MOTOR_IDLE_DISABLE_MS){
@@ -685,9 +705,37 @@ void Stepper_Stop(void){
 	Stepper_SetMicrosteps(MOVE_RUN_MICROSTEPS);
 	Stepper_RestoreRunCurrent();
 	Stepper_SetSilentMode();
+	if(!tpu_mode_enabled){
+		// 非TPU模式不需要静止保持力，停止后立即失能。
+		WRITE_EN_PIN(1);
+		step_driver_enabled=false;
+		step_idle_timer_active=false;
+		return;
+	}
 	if(was_running||(step_driver_enabled&&!step_idle_timer_active)){
 		step_idle_start_ms=millis();
 		step_idle_timer_active=true;
+	}
+}
+
+void ApplyMaterialMode(uint32_t nowTime){
+	fast_mode_enabled=!tpu_mode_enabled;
+	if(tpu_mode_enabled){
+		// TPU模式禁止高速补偿；若已在高速，按加速度平滑退出。
+		Stepper_DisableBoost(step_running_state);
+		if(step_running_state==Stop){
+			Stepper_EnableDriver();
+			step_idle_start_ms=nowTime;
+			step_idle_timer_active=true;
+		}
+	}
+	else{
+		// 非TPU模式停止时不保留线圈电流。
+		if(step_running_state==Stop){
+			WRITE_EN_PIN(1);
+			step_driver_enabled=false;
+			step_idle_timer_active=false;
+		}
 	}
 }
 
@@ -832,10 +880,12 @@ bool Dual_Key_Update(uint32_t nowTime){
 
 	if(both_down&&!dual_key_chord_triggered){
 		ClearTimeoutAndPause();
-		fast_mode_enabled=!fast_mode_enabled;
+		tpu_mode_enabled=!tpu_mode_enabled;
+		buffer_para.tpu_mode=tpu_mode_enabled;
+		EEPROM.put(0,buffer_para);
 		dual_key_chord_triggered=true;
-		fast_mode_notice=fast_mode_enabled?FAST_MODE_NOTICE_ENABLED:FAST_MODE_NOTICE_DISABLED;
-		fast_mode_notice_start_ms=nowTime;
+		material_mode_notice=tpu_mode_enabled?MATERIAL_MODE_NOTICE_TPU:MATERIAL_MODE_NOTICE_NON_TPU;
+		material_mode_notice_start_ms=nowTime;
 
 		// 双键动作不能继续参与单击、双击或单键长按判定。
 		noInterrupts();
@@ -845,9 +895,9 @@ bool Dual_Key_Update(uint32_t nowTime){
 		key2_press_cnt=0;
 		interrupts();
 
-		if(!fast_mode_enabled){
-			Stepper_DisableBoost(motor_state);
-		}
+		ApplyMaterialMode(nowTime);
+		Filament_LED_Update();
+		Serial.println(tpu_mode_enabled?"material mode: TPU":"material mode: non-TPU");
 		Serial.println(fast_mode_enabled?"fast mode: enabled":"fast mode: disabled");
 	}
 
@@ -1255,8 +1305,8 @@ void motor_control(void)
 			//断料引脚输出断料状态
 			digitalWrite(DUANLIAO,DUANLIAO_OUT_STATE);
 			
-			//关闭指示灯
-			digitalWrite(START_LED,0);
+			//确认断料后关闭耗材灯。
+			filament_led_active=false;
 
 			is_front=false;
 			front_time=0;
@@ -1273,12 +1323,11 @@ void motor_control(void)
 		filament_runout_delay_flag=false;
 	}
 
+	// 断料延时期间仍按有料显示；确认断料后已在上方返回。
+	filament_led_active=true;
 	if(!blockage_detect.blockage_flag){
 		//有耗材或断料延时未超时，断料引脚输出非断料状态
 		digitalWrite(DUANLIAO,!DUANLIAO_OUT_STATE);
-		
-		//开启指示灯
-		digitalWrite(START_LED,1);					
 	}
 
 		
@@ -1711,8 +1760,9 @@ void USB_Serial_Analys(void){
 				Serial.println("allow_error="+String(blockage_detect.allow_error));
 				Serial.println("I_CURRENT="+String(I_CURRENT));
 				Serial.println("boost_current="+String(StepperBoostCurrentMa()));
-				Serial.println("hold_current="+String(HOLD_CURRENT_MA));
-				Serial.println("idle_disable(ms)="+String(MOTOR_IDLE_DISABLE_MS));
+				Serial.println("hold_current_scale="+String(MIN_NONZERO_HOLD_CURRENT_SCALE)+" (minimum nonzero)");
+				Serial.println("material_mode="+String(tpu_mode_enabled?"TPU":"non-TPU"));
+				Serial.println("idle_disable(ms)="+String(tpu_mode_enabled?MOTOR_IDLE_DISABLE_MS:0));
 				Serial.println("fast_mode="+String(fast_mode_enabled));
 				Serial.println("pause_mode="+String(pause_mode_active));
 				Serial.println("timeout_error="+String(timeout_error));
