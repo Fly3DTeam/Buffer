@@ -64,8 +64,9 @@ static const uint16_t MOVE_BOOST_MICROSTEPS = MOVE_RUN_MICROSTEPS;
 static const float MOVE_BOOST_DISTANCE_MM = 100.0f;
 static const float MOVE_BOOST_SPEED_MM_S = 100.0f;
 static const float BOOST_CURRENT_SCALE = 1.2f;
-// IHOLD=0在StealthChop下可用于自由滑行/被动制动；1是最小非零保持档位。
-static const uint8_t MIN_NONZERO_HOLD_CURRENT_SCALE = 1;
+// IHOLD=0对应1/32满量程；配合PWMCONF.freewheel=0时仍为正常保持电流。
+static const uint8_t MIN_HOLD_CURRENT_SCALE = 0;
+static const uint8_t TMC_FREEWHEEL_NORMAL = 0;
 static const uint8_t TMC_POWERDOWN_DELAY = 20;
 static const uint8_t TMC_HOLD_DELAY = 1;
 static const uint32_t MOTOR_IDLE_DISABLE_MS = 30000;
@@ -74,9 +75,6 @@ static const uint32_t TMC_STATUS_INTERVAL_MS = 1000;
 static const uint8_t TMC_MAX_BAD_STATUS_COUNT = 3;
 static const bool TMC2225_GCONF_SPREADCYCLE_INVERT_WRITE = true;
 static const uint8_t HALL_EVENT_QUEUE_SIZE = 16;
-static const uint8_t MATERIAL_MODE_NOTICE_NONE = 0;
-static const uint8_t MATERIAL_MODE_NOTICE_NON_TPU = 1;
-static const uint8_t MATERIAL_MODE_NOTICE_TPU = 2;
 bool is_error=false;//错误标志位，如果连续60s推送耗材没停过，则认为错误
 static volatile bool timeout_error=false;
 static bool pause_mode_active=false;
@@ -118,12 +116,11 @@ volatile uint32_t key1_release_times=0;
 volatile uint32_t key2_release_times=0;
 volatile uint8_t key1_press_cnt=0;
 volatile uint8_t key2_press_cnt=0;
+static volatile bool manual_key_control_active=false;
 static bool fast_mode_enabled=true;
 static bool tpu_mode_enabled=DEFAULT_TPU_MODE;
 static bool dual_key_chord_active=false;
 static bool dual_key_chord_triggered=false;
-static uint8_t material_mode_notice=MATERIAL_MODE_NOTICE_NONE;
-static uint32_t material_mode_notice_start_ms=0;
 static bool filament_led_active=false;
 
 uint32_t inform_flag=false;
@@ -406,29 +403,6 @@ void Status_LED_Update(uint32_t nowTime){
 	static uint8_t led_state=0;
 	static uint8_t last_mode=0xff;
 
-	if(material_mode_notice!=MATERIAL_MODE_NOTICE_NONE){
-		uint32_t elapsed=nowTime-material_mode_notice_start_ms;
-		uint32_t duration=material_mode_notice==MATERIAL_MODE_NOTICE_NON_TPU?2000:2500;
-
-		if(elapsed<duration){
-			if(material_mode_notice==MATERIAL_MODE_NOTICE_NON_TPU){
-				// 进入非TPU模式：五次明显闪烁（200ms亮，200ms灭）。
-				digitalWrite(ERR_LED,((elapsed/200)%2)==0?HIGH:LOW);
-			}
-			else{
-				// 进入TPU模式：长亮2s，再熄灭500ms。
-				digitalWrite(ERR_LED,elapsed<2000?HIGH:LOW);
-			}
-			return;
-		}
-
-		material_mode_notice=MATERIAL_MODE_NOTICE_NONE;
-		last_mode=0xff;
-		led_state=0;
-		lastToggleTime=nowTime;
-		digitalWrite(ERR_LED,LOW);
-	}
-
 	uint8_t mode=3;
 	if(tmc_status_error) mode=0;
 	else if(blockage_detect.blockage_flag) mode=1;
@@ -650,10 +624,10 @@ void Stepper_SetBoostCurrent(void){
 }
 
 void TMC_SetRunAndHoldCurrent(uint16_t run_current_ma){
-	// rms_current负责设置IRUN并选择vsense；IHOLD=1是确保线圈仍有保持
-	// 电流的最小档位，对应当前满量程的2/32。
+	// rms_current负责设置IRUN并选择vsense；IHOLD=0对应1/32满量程，
+	// 在freewheel=0时是最小的非零保持电流。
 	driver.rms_current(run_current_ma,1.0f);
-	driver.ihold(MIN_NONZERO_HOLD_CURRENT_SCALE);
+	driver.ihold(MIN_HOLD_CURRENT_SCALE);
 }
 
 void Stepper_EnableDriver(void){
@@ -884,8 +858,6 @@ bool Dual_Key_Update(uint32_t nowTime){
 		buffer_para.tpu_mode=tpu_mode_enabled;
 		EEPROM.put(0,buffer_para);
 		dual_key_chord_triggered=true;
-		material_mode_notice=tpu_mode_enabled?MATERIAL_MODE_NOTICE_TPU:MATERIAL_MODE_NOTICE_NON_TPU;
-		material_mode_notice_start_ms=nowTime;
 
 		// 双键动作不能继续参与单击、双击或单键长按判定。
 		noInterrupts();
@@ -962,6 +934,7 @@ void TMC_ApplyExpectedConfig(void){
 	driver.iholddelay(TMC_HOLD_DELAY);
 	Stepper_SetMicrosteps(StepperExpectedMicrosteps(),true);
 	TMC_WriteSpreadCycle(step_high_speed_mode);
+	driver.freewheel(TMC_FREEWHEEL_NORMAL);
 	driver.pwm_autoscale(true);
 }
 
@@ -986,6 +959,8 @@ bool TMC_CheckAndRepair(void){
 	comm_ok &= TMC_CrcOk();
 	bool pwm_autoscale=driver.pwm_autoscale();
 	comm_ok &= TMC_CrcOk();
+	uint8_t freewheel=driver.freewheel();
+	comm_ok &= TMC_CrcOk();
 	uint16_t microsteps=driver.microsteps();
 	comm_ok &= TMC_CrcOk();
 	uint16_t rms_current=driver.rms_current();
@@ -1004,6 +979,7 @@ bool TMC_CheckAndRepair(void){
 	config_ok &= (toff==5);
 	config_ok &= intpol;
 	config_ok &= pwm_autoscale;
+	config_ok &= (freewheel==TMC_FREEWHEEL_NORMAL);
 	config_ok &= (microsteps==StepperExpectedMicrosteps());
 	config_ok &= (version!=0&&version!=0xff);
 	config_ok &= (abs((int32_t)rms_current-(int32_t)TMC_ExpectedCurrentMa())<=120);
@@ -1083,6 +1059,7 @@ void buffer_motor_init(){
   driver.iholddelay(TMC_HOLD_DELAY);
   Stepper_SetMicrosteps(MOVE_RUN_MICROSTEPS,true);
   TMC_WriteSpreadCycle(false);
+  driver.freewheel(TMC_FREEWHEEL_NORMAL);
   step_high_speed_mode=false;
   step_boost_current_active=false;
   driver.pwm_autoscale(true);
@@ -1198,27 +1175,20 @@ void motor_control(void)
 
 	}	
 
-	// 停止位也要先处理单击/双击，否则电机位于停止位时无法切换暂停状态。
-	if(stop_position_pending){
-		Stepper_Stop();
-		motor_state=Stop;
-		last_motor_state=Stop;
-		is_front=false;
-		front_time=0;
-		return;
-	}
-
-	//按键1按下后长按
+	// 单键长按的手动控制优先于光感和外部控制信号。
 	bool key1_long_request=!dual_key_gesture_active&&key1_press_flag&&!key2_press_flag&&cur_times-key1_press_times>=500;
 	bool key2_long_request=!dual_key_gesture_active&&key2_press_flag&&!key1_press_flag&&cur_times-key2_press_times>=500;
-	if(immediate_position==0&&(key1_long_request||digitalRead(BACK_SIGNAL_PIN)==LOW)&&!buffer.buffer1_pos2_sensor_state)
+	if(key1_long_request||(immediate_position==0&&digitalRead(BACK_SIGNAL_PIN)==LOW&&!buffer.buffer1_pos2_sensor_state))
 	{
 		ClearTimeoutAndPause();
+		manual_key_control_active=key1_long_request;
 		Stepper_Stop();
 		Stepper_Run(Back);
 		while((key1_press_flag&&!key2_press_flag)||digitalRead(BACK_SIGNAL_PIN)==LOW){
+			bool key_held=key1_press_flag&&!key2_press_flag;
+			manual_key_control_active=key_held;
 			read_sensor_state();
-			if(buffer.buffer1_pos2_sensor_state||Hall_Sensor_ImmediatePending()){
+			if(!key_held&&(buffer.buffer1_pos2_sensor_state||Hall_Sensor_ImmediatePending())){
 				break;
 			}
 			Stepper_CheckBoost(Back,!IsNoMaterial());
@@ -1230,6 +1200,7 @@ void motor_control(void)
 		}//等待松手
 					
 
+		manual_key_control_active=false;
 		Stepper_Stop();
 		motor_state=Stop;
 
@@ -1241,14 +1212,17 @@ void motor_control(void)
 		ClearTimeoutAndPause();
 
 	}
-	else if(immediate_position==0&&(key2_long_request||digitalRead(FRONT_SIGNAL_PIN)==LOW)&&!buffer.buffer1_pos2_sensor_state)//按键2按下后长按
+	else if(key2_long_request||(immediate_position==0&&digitalRead(FRONT_SIGNAL_PIN)==LOW&&!buffer.buffer1_pos2_sensor_state))
 	{
 		ClearTimeoutAndPause();
+		manual_key_control_active=key2_long_request;
 		Stepper_Stop();
 		Stepper_Run(Forward);
 		while((key2_press_flag&&!key1_press_flag)||digitalRead(FRONT_SIGNAL_PIN)==LOW){
+			bool key_held=key2_press_flag&&!key1_press_flag;
+			manual_key_control_active=key_held;
 			read_sensor_state();
-			if(buffer.buffer1_pos2_sensor_state||Hall_Sensor_ImmediatePending()){
+			if(!key_held&&(buffer.buffer1_pos2_sensor_state||Hall_Sensor_ImmediatePending())){
 				break;
 			}
 			Stepper_CheckBoost(Forward,!IsNoMaterial());
@@ -1259,6 +1233,7 @@ void motor_control(void)
 		};//等待松手
 					
 
+		manual_key_control_active=false;
 		Stepper_Stop();
 		motor_state=Stop;
 
@@ -1268,6 +1243,16 @@ void motor_control(void)
 			return;
 		}
 		ClearTimeoutAndPause();
+	}
+
+	// 没有单键长按控制时，停止位仍保持最高的自动控制优先级。
+	if(stop_position_pending){
+		Stepper_Stop();
+		motor_state=Stop;
+		last_motor_state=Stop;
+		is_front=false;
+		front_time=0;
+		return;
 	}
 
 	if(immediate_position==0){
@@ -1486,6 +1471,10 @@ void key2_it_callback(void){
 }
 
 void Hall_Sensor_Latch(uint8_t position){
+	if(manual_key_control_active){
+		// 单键长按手动运行期间忽略全部缓冲光感，包括停止位的立即停脉冲。
+		return;
+	}
 	if(position==2){
 		TIM3->CR1 &= ~TIM_CR1_CEN;
 		digitalWrite(STEP_PIN,LOW);
@@ -1760,7 +1749,7 @@ void USB_Serial_Analys(void){
 				Serial.println("allow_error="+String(blockage_detect.allow_error));
 				Serial.println("I_CURRENT="+String(I_CURRENT));
 				Serial.println("boost_current="+String(StepperBoostCurrentMa()));
-				Serial.println("hold_current_scale="+String(MIN_NONZERO_HOLD_CURRENT_SCALE)+" (minimum nonzero)");
+				Serial.println("hold_current_scale="+String(MIN_HOLD_CURRENT_SCALE)+" (1/32 full scale)");
 				Serial.println("material_mode="+String(tpu_mode_enabled?"TPU":"non-TPU"));
 				Serial.println("idle_disable(ms)="+String(tpu_mode_enabled?MOTOR_IDLE_DISABLE_MS:0));
 				Serial.println("fast_mode="+String(fast_mode_enabled));

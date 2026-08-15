@@ -2,7 +2,7 @@
 
 This is the PlatformIO firmware project for the Fly Buffer/LLL Buffer module. It monitors filament buffer position, drives a BMG feeder, reports runout and blockage states, and communicates with a TMC2225 stepper driver.
 
-Chinese documentation is available in [README.md](README.md).
+Chinese documentation is available in [README.md](README.md). Version history is maintained in [CHANGELOG.md](CHANGELOG.md).
 
 ## Features
 
@@ -36,12 +36,12 @@ Chinese documentation is available in [README.md](README.md).
 
 ## Behavior
 
-- The stop position has the highest priority. When it is detected, the firmware disables STEP pulses immediately, then finishes current/mode/enable recovery in the main loop.
+- In automatic control, the stop position has the highest priority. When detected, it disables STEP pulses immediately before the main loop completes current/mode/enable recovery; a single-button long-press manual command has priority over the stop position.
 - Normal speed is set with the `speed` command in `mm/s`. Default: `30mm/s`.
 - Acceleration is set with the `accel` command in `mm/s^2`. Default: `500mm/s^2`.
 - Direction is controlled by buffer sensors, buttons, or external forward/back signals.
 - The firmware provides TPU and non-TPU filament modes. The selected mode is stored in EEPROM and survives power cycles; new devices and first upgrades from older firmware default to non-TPU mode.
-- TPU mode disables boost. After stopping, the driver remains enabled with `IHOLD=1`, the minimum nonzero hold scale (`2/32` of full scale), and is disabled after `30s` of inactivity.
+- TPU mode disables boost. After stopping, the driver remains enabled with `IHOLD=0`, the minimum nonzero hold current (`1/32` of full scale, about `30mA RMS` with the default configuration), and is disabled after `30s` of inactivity. Firmware explicitly sets `PWMCONF.freewheel=0`, so this remains normal current regulation rather than freewheeling or passive braking.
 - Non-TPU mode permits boost to `100mm/s` after more than `100mm` of movement without a position change. The driver is disabled immediately whenever the motor stops, with no standstill current.
 - Boost raises current and selects high-speed mode. On exit it ramps back to normal speed using `accel`, then restores normal current and silent mode.
 - Boost is disabled when there is no filament.
@@ -51,9 +51,9 @@ Chinese documentation is available in [README.md](README.md).
 
 - Single-click either button to clear the pause/error state and resume automatic operation.
 - Double-click either button to pause automatic operation and stop the motor.
-- Hold the back button for manual retraction, or hold the forward button for manual feeding.
+- Hold the back button for manual retraction, or hold the forward button for manual feeding. A single-button long press has the highest priority and ignores all three buffer sensors, including the HALL2 stop position, until the button is released. External forward/back signals do not bypass the sensors.
 - Press both buttons together to switch between TPU and non-TPU modes and save the selection to EEPROM. Both buttons must be released before another switch is accepted.
-- Entering non-TPU mode is confirmed by five clear flashes (`200ms` on and `200ms` off). Entering TPU mode is confirmed by `2s` solid on followed by `500ms` off. Each confirmation runs once before normal status indication resumes.
+- Switching TPU/non-TPU mode does not trigger an extra status-LED indication; the status LED continues showing the current operating or fault state.
 
 ## Filament Runout
 
@@ -76,8 +76,6 @@ All `ERR_LED / PA15` indications are listed below:
 
 | Indication | Timing | Repeats | Meaning |
 | --- | --- | --- | --- |
-| Five clear flashes | `200ms` on and `200ms` off, five times | No | Switched to non-TPU mode |
-| Solid on, then off | On for `2s`, then off for `500ms` | No | Switched to TPU mode |
 | Triple fast flash and pause | Each on/off interval is `80ms`, followed by `700ms` off | Yes | Repeated TMC communication, configuration, or driver-status fault |
 | Continuous fast flash | Toggles every `50ms` | Yes | Filament blockage detected |
 | Continuous ultra-fast flash | Toggles every `25ms` | Yes | Forward motion exceeded `timeout` |
@@ -85,9 +83,46 @@ All `ERR_LED / PA15` indications are listed below:
 | Double flash | `100ms` on, `100ms` off, `100ms` on, then `600ms` off | Yes | Normal operation with an MDM module connected |
 | Slow blink | `500ms` on and `500ms` off | Yes | Normal operation without an MDM module |
 
-When multiple states are active, the display priority is: filament-mode confirmation → TMC fault → blockage → forward timeout → pause → MDM connected → normal without MDM. After the one-shot mode confirmation finishes, the LED resumes the repeating indication for the current state.
+When multiple states are active, the display priority is: TMC fault → blockage → forward timeout → pause → MDM connected → normal without MDM.
 
-`START_LED / PA8` is the filament LED. With filament present in TPU mode, it alternates inversely with the status LED (filament LED off while status LED is on, and vice versa); it remains solid on in non-TPU mode. It turns off after runout is confirmed; the `10s` runout delay is still displayed as filament present.
+`START_LED / PA8` is the filament LED. It blinks with filament present in TPU mode, stays solid on with filament present in non-TPU mode, and turns off after runout is confirmed.
+
+### Identifying TPU and Non-TPU Modes
+
+- TPU mode: the filament LED blinks while filament is present.
+- Non-TPU mode: the filament LED stays solid on while filament is present.
+
+## Default Parameters
+
+All configurable parameters below are stored in EEPROM and survive power cycles:
+
+| Parameter | Default | Unit/meaning | How to change |
+| --- | ---: | --- | --- |
+| Filament mode | Non-TPU | Enables boost and disables the driver immediately after stopping | Press both buttons |
+| Forward timeout `timeout` | `60000` | `ms`; enters timeout error after `60s` of continuous forward motion | `timeout <value>` |
+| Normal speed `speed` | `30` | `mm/s` | `speed <value>` |
+| Acceleration/deceleration `accel` | `500` | `mm/s²` | `accel <value>` |
+| TMC run current `I_CURRENT` | `500` | `mA RMS`; command range `100–3000mA` | `I <value>` |
+| Host extrusion conversion `steps` | `916` | `pulse/mm`; range `1–51200` | `steps <value>` |
+| MDM encoder length `encoder_length` | `1.73` | `mm/pulse` | `encoder <value>` |
+| Blockage error scale `allow_error_scale` | `2` | Default allowed error: `1.73 × 2 = 3.46mm` | `scale <value>` |
+| Runout active level | `0` | `DUANLIAO` active low | `out <0/1>` |
+
+The main fixed parameters are:
+
+| Parameter | Default | Meaning |
+| --- | ---: | --- |
+| Runout confirmation delay | `10s` | After filament has previously been present, runout is confirmed after this continuous no-filament interval |
+| Boost trigger distance | `100mm` | Available only in non-TPU mode |
+| Boost target speed | `100mm/s` | Used when normal speed is lower |
+| Boost current multiplier | `1.2` | `120%` of run current, capped in code at `3000mA` |
+| TPU standstill current | `IHOLD=0` | `1/32` of full scale, about `30mA RMS` with default configuration |
+| TPU stopped disable delay | `30s` | Standstill holding current remains active during this interval |
+| Non-TPU stopped disable delay | `0s` | Driver is disabled immediately after stopping |
+| Motor microsteps | `16` | Shared by normal and boosted motion |
+| BMG gear ratio | `3:1` | Used for motor STEP conversion |
+| BMG drive circumference | `22.93mm` | Used for motor STEP conversion |
+| Watchdog timeout | About `4s` | A stalled main loop normally resets in about `4–5s` |
 
 ## Serial Commands
 
@@ -124,30 +159,3 @@ pio run
 ```
 
 The active project environment is `fly_f072cb`.
-
-## Changelog
-
-### 2.0.3
-
-- Added power-loss-protected TPU/non-TPU modes selected by pressing both buttons.
-- TPU mode disables boost, uses minimum nonzero standstill current, and disables the driver after 30 seconds stopped.
-- Non-TPU mode enables boost and disables the driver immediately after stopping.
-- With filament present, the filament LED alternates inversely with the status LED in TPU mode and remains solid in non-TPU mode.
-
-### 2.0.1
-
-- Updated firmware version to `2.0.1`.
-- Changed motor control to STEP/DIR timer pulse output.
-- Changed speed units to `mm/s`; added `accel` command for acceleration.
-- Added BMG gear based step conversion.
-- Unified all motion to 16 microsteps to reduce STEP interrupt load at `100mm/s`.
-- Added automatic boost to `100mm/s` after more than `100mm` of movement without a position change.
-- Boost mode raises current and switches to high-speed mode; stopping restores normal current and silent mode.
-- Changed TMC2225 communication to use the TMC2208-compatible class.
-- Added periodic TMC status/config checks with automatic reconfiguration.
-- Added compensation for the TMC2225 `GCONF.en_spreadCycle` read/write inversion behavior.
-- Optimized watchdog feeding and high-speed pulse generation stability.
-- Made stop-position detection immediately disable STEP pulses.
-- Changed runout behavior so the buffer continues working for 10 seconds before reporting runout.
-- Added automatic recovery from forward-timeout error after filament reload.
-- Fixed parameter safety issues such as zero `steps` and invalid current values.
