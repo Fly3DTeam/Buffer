@@ -64,6 +64,8 @@ static const uint16_t MOVE_BOOST_MICROSTEPS = MOVE_RUN_MICROSTEPS;
 static const float MOVE_BOOST_DISTANCE_MM = 100.0f;
 static const float MOVE_BOOST_SPEED_MM_S = 100.0f;
 static const float BOOST_CURRENT_SCALE = 1.2f;
+static const uint16_t DEFAULT_NON_TPU_RUN_CURRENT_MA = 500;
+static const uint16_t TPU_RUN_CURRENT_MA = 400;
 // IHOLD=0对应1/32满量程；配合PWMCONF.freewheel=0时仍为正常保持电流。
 static const uint8_t MIN_HOLD_CURRENT_SCALE = 0;
 static const uint8_t TMC_FREEWHEEL_NORMAL = 0;
@@ -140,7 +142,7 @@ float encoder_length=1.73;//MDM段堵料模块每脉冲对应的线材移动量�
 const float DEFAULT_ALLOW_ERROR_SCALE = 2;
 float allow_error_scale=2;//允许误差比例
 
-uint32_t I_CURRENT = 500;		//电流
+uint32_t I_CURRENT = DEFAULT_NON_TPU_RUN_CURRENT_MA;	//非TPU模式运行电流
 float acceleration=DEFAULT_ACCELERATION_MM_S2;//加速度(mm/s^2)
 
 const int EEPROM_ADDR_TIMEOUT = 0;
@@ -203,6 +205,7 @@ uint16_t StepperExpectedMicrosteps(void);
 void Stepper_SetMicrosteps(uint16_t microsteps,bool force=false);
 float StepperEffectiveSpeedMmS(void);
 uint32_t StepperBoostPulseThreshold(void);
+uint32_t StepperRunCurrentMa(void);
 uint32_t StepperBoostCurrentMa(void);
 uint32_t StepperPulseHz(void);
 void Step_Timer_Callback(void);
@@ -320,7 +323,7 @@ void buffer_parameter_init(Buffer_Parameter &buffer_para){
 	}
 	I_CURRENT=buffer_para.I_CURRENT;
 	if(I_CURRENT<100||I_CURRENT>MAX_DRIVER_CURRENT_MA){
-		I_CURRENT=500;
+		I_CURRENT=DEFAULT_NON_TPU_RUN_CURRENT_MA;
 		buffer_para.I_CURRENT=I_CURRENT;
 		EEPROM.put(0, buffer_para);
 	}
@@ -567,7 +570,12 @@ uint32_t StepperBoostPulseThreshold(void){
 	return (uint32_t)(MOVE_BOOST_DISTANCE_MM*BMG_MOTOR_STEPS_PER_MM+0.5f);
 }
 
+uint32_t StepperRunCurrentMa(void){
+	return tpu_mode_enabled?TPU_RUN_CURRENT_MA:I_CURRENT;
+}
+
 uint32_t StepperBoostCurrentMa(void){
+	// 快速补偿仅属于非TPU模式，因此始终以非TPU运行电流为基准。
 	uint32_t boost_current=(uint32_t)(I_CURRENT*BOOST_CURRENT_SCALE+0.5f);
 	if(boost_current<I_CURRENT){
 		boost_current=I_CURRENT;
@@ -651,7 +659,7 @@ void Stepper_IdleDisableTask(uint32_t nowTime){
 
 void Stepper_RestoreRunCurrent(void){
 	if(step_boost_current_active){
-		TMC_SetRunAndHoldCurrent(I_CURRENT);
+		TMC_SetRunAndHoldCurrent(StepperRunCurrentMa());
 		step_boost_current_active=false;
 	}
 }
@@ -710,6 +718,10 @@ void ApplyMaterialMode(uint32_t nowTime){
 			step_driver_enabled=false;
 			step_idle_timer_active=false;
 		}
+	}
+	if(!step_boost_decelerating){
+		// 立即应用新模式的运行电流；高速减速期间则在减速完成后恢复。
+		TMC_SetRunAndHoldCurrent(StepperRunCurrentMa());
 	}
 }
 
@@ -901,6 +913,7 @@ void ClearTimeoutAndPause(void){
 
 void Stepper_Run(Motor_State state){
 	Stepper_RestoreRunCurrent();
+	TMC_SetRunAndHoldCurrent(StepperRunCurrentMa());
 	Stepper_SetSilentMode();
 	Stepper_ResetMoveTracking();
 	Stepper_SetMicrosteps(MOVE_RUN_MICROSTEPS);
@@ -920,7 +933,7 @@ bool TMC_CrcOk(void){
 }
 
 uint16_t TMC_ExpectedCurrentMa(void){
-	return step_boost_current_active?StepperBoostCurrentMa():I_CURRENT;
+	return step_boost_current_active?StepperBoostCurrentMa():StepperRunCurrentMa();
 }
 
 void TMC_ApplyExpectedConfig(void){
@@ -1054,7 +1067,7 @@ void buffer_motor_init(){
   driver.mstep_reg_select(true);   // Use UART microstep setting
   driver.toff(5);                  // Enables driver in software
   driver.intpol(true);
-  TMC_SetRunAndHoldCurrent(I_CURRENT);
+  TMC_SetRunAndHoldCurrent(StepperRunCurrentMa());
   driver.TPOWERDOWN(TMC_POWERDOWN_DELAY);
   driver.iholddelay(TMC_HOLD_DELAY);
   Stepper_SetMicrosteps(MOVE_RUN_MICROSTEPS,true);
@@ -1747,7 +1760,9 @@ void USB_Serial_Analys(void){
 				Serial.println("bmg_motor_steps_per_mm="+String(BMG_MOTOR_STEPS_PER_MM));
 				Serial.println("allow_error_scale="+String(allow_error_scale));
 				Serial.println("allow_error="+String(blockage_detect.allow_error));
-				Serial.println("I_CURRENT="+String(I_CURRENT));
+				Serial.println("non_tpu_run_current(mA)="+String(I_CURRENT));
+				Serial.println("tpu_run_current(mA)="+String(TPU_RUN_CURRENT_MA));
+				Serial.println("active_run_current(mA)="+String(StepperRunCurrentMa()));
 				Serial.println("boost_current="+String(StepperBoostCurrentMa()));
 				Serial.println("hold_current_scale="+String(MIN_HOLD_CURRENT_SCALE)+" (1/32 full scale)");
 				Serial.println("material_mode="+String(tpu_mode_enabled?"TPU":"non-TPU"));
@@ -1828,7 +1843,8 @@ void USB_Serial_Analys(void){
 				int index=serial_buf.indexOf(" ");
 				if(index==-1){
 					serial_buf="";
-					Serial.println("I_CURRENT="+String(I_CURRENT));
+					Serial.println("non_tpu_run_current(mA)="+String(I_CURRENT));
+					Serial.println("tpu_run_current(mA)="+String(TPU_RUN_CURRENT_MA));
 					return ;
 				}
 				serial_buf=serial_buf.substring(index+1);
@@ -1845,7 +1861,7 @@ void USB_Serial_Analys(void){
 					TMC_SetRunAndHoldCurrent(StepperBoostCurrentMa());
 				}
 				else{
-					TMC_SetRunAndHoldCurrent(I_CURRENT);
+					TMC_SetRunAndHoldCurrent(StepperRunCurrentMa());
 				}
 				EEPROM.put(0, buffer_para);
 				serial_buf="";

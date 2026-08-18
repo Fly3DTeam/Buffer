@@ -41,7 +41,7 @@ Chinese documentation is available in [README.md](README.md). Version history is
 - Acceleration is set with the `accel` command in `mm/s^2`. Default: `500mm/s^2`.
 - Direction is controlled by buffer sensors, buttons, or external forward/back signals.
 - The firmware provides TPU and non-TPU filament modes. The selected mode is stored in EEPROM and survives power cycles; new devices and first upgrades from older firmware default to non-TPU mode.
-- TPU mode disables boost. After stopping, the driver remains enabled with `IHOLD=0`, the minimum nonzero hold current (`1/32` of full scale, about `30mA RMS` with the default configuration), and is disabled after `30s` of inactivity. Firmware explicitly sets `PWMCONF.freewheel=0`, so this remains normal current regulation rather than freewheeling or passive braking.
+- TPU mode uses a fixed `400mA RMS` run current and disables boost. After stopping, the driver remains enabled with `IHOLD=0`, the minimum nonzero hold current (`1/32` of full scale, about `30mA RMS` with the default configuration), and is disabled after `30s` of inactivity. Firmware explicitly sets `PWMCONF.freewheel=0`, so this remains normal current regulation rather than freewheeling or passive braking.
 - Non-TPU mode permits boost to `100mm/s` after more than `100mm` of movement without a position change. The driver is disabled immediately whenever the motor stops, with no standstill current.
 - Boost raises current and selects high-speed mode. On exit it ramps back to normal speed using `accel`, then restores normal current and silent mode.
 - Boost is disabled when there is no filament.
@@ -102,7 +102,7 @@ All configurable parameters below are stored in EEPROM and survive power cycles:
 | Forward timeout `timeout` | `60000` | `ms`; enters timeout error after `60s` of continuous forward motion | `timeout <value>` |
 | Normal speed `speed` | `30` | `mm/s` | `speed <value>` |
 | Acceleration/deceleration `accel` | `500` | `mm/s²` | `accel <value>` |
-| TMC run current `I_CURRENT` | `500` | `mA RMS`; command range `100–3000mA` | `I <value>` |
+| Non-TPU run current `I_CURRENT` | `500` | `mA RMS`; command range `100–3000mA` | `I <value>` |
 | Host extrusion conversion `steps` | `916` | `pulse/mm`; range `1–51200` | `steps <value>` |
 | MDM encoder length `encoder_length` | `1.73` | `mm/pulse` | `encoder <value>` |
 | Blockage error scale `allow_error_scale` | `2` | Default allowed error: `1.73 × 2 = 3.46mm` | `scale <value>` |
@@ -116,6 +116,7 @@ The main fixed parameters are:
 | Boost trigger distance | `100mm` | Available only in non-TPU mode |
 | Boost target speed | `100mm/s` | Used when normal speed is lower |
 | Boost current multiplier | `1.2` | `120%` of run current, capped in code at `3000mA` |
+| TPU run current | `400mA RMS` | Fixed in TPU mode and unaffected by the `I` command |
 | TPU standstill current | `IHOLD=0` | `1/32` of full scale, about `30mA RMS` with default configuration |
 | TPU stopped disable delay | `30s` | Standstill holding current remains active during this interval |
 | Non-TPU stopped disable delay | `0s` | Driver is disabled immediately after stopping |
@@ -137,7 +138,7 @@ Commands end with a newline.
 | `accel` | Show acceleration |
 | `accel <value>` | Set acceleration in `mm/s^2` |
 | `I` | Show TMC current |
-| `I <value>` | Set TMC current, range `100-3000mA` |
+| `I <value>` | Set non-TPU run current, range `100-3000mA` |
 | `timeout <value>` | Set forward timeout in `ms` |
 | `rt` | Show forward timeout |
 | `steps <value>` | Set host pulse conversion parameter |
