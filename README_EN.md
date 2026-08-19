@@ -41,7 +41,7 @@ Chinese documentation is available in [README.md](README.md). Version history is
 - Acceleration is set with the `accel` command in `mm/s^2`. Default: `500mm/s^2`.
 - Direction is controlled by buffer sensors, buttons, or external forward/back signals.
 - The firmware provides TPU and non-TPU filament modes. The selected mode is stored in EEPROM and survives power cycles; new devices and first upgrades from older firmware default to non-TPU mode.
-- TPU mode uses a fixed `400mA RMS` run current and disables boost. After stopping, the driver remains enabled with `IHOLD=0`, the minimum nonzero hold current (`1/32` of full scale, about `30mA RMS` with the default configuration), and is disabled after `30s` of inactivity. Firmware explicitly sets `PWMCONF.freewheel=0`, so this remains normal current regulation rather than freewheeling or passive braking.
+- TPU mode uses a fixed `400mA RMS` run current and disables boost. Even after runout is confirmed, the motor continues operating normally from the three buffer-position sensors. After stopping, the driver remains enabled with `IHOLD=0`, the minimum nonzero hold current (`1/32` of full scale, about `30mA RMS` with the default configuration), and is disabled after `30s` of inactivity. Firmware explicitly sets `PWMCONF.freewheel=0`, so this remains normal current regulation rather than freewheeling or passive braking.
 - Non-TPU mode permits boost to `100mm/s` after more than `100mm` of movement without a position change. The driver is disabled immediately whenever the motor stops, with no standstill current.
 - Boost raises current and selects high-speed mode. On exit it ramps back to normal speed using `accel`, then restores normal current and silent mode.
 - Boost is disabled when there is no filament.
@@ -60,6 +60,7 @@ Chinese documentation is available in [README.md](README.md). Version history is
 - If the device powers on with no filament, runout is reported immediately.
 - The 10-second delay is only used after filament was present and then becomes absent.
 - During the 10-second delay, the buffer continues working; only the runout output and indication are delayed.
+- After runout is confirmed, TPU mode continues controlling the motor from the three buffer-position sensors; non-TPU mode stops the motor.
 - If filament is reloaded during the delay, the delay is cancelled and normal operation resumes.
 - If filament is removed again during the delay, the timer starts again.
 

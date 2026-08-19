@@ -1282,6 +1282,7 @@ void motor_control(void)
 	
 	bool no_material = IsNoMaterial();
 	bool material_state_changed=last_no_material!=no_material;
+	bool runout_confirmed=false;
 	last_no_material=no_material;
 
 	if(material_state_changed&&(timeout_error||pause_mode_active)){
@@ -1296,24 +1297,27 @@ void motor_control(void)
 
 		if(!filament_has_been_present||cur_times-filament_runout_delay_times>=FILAMENT_RUNOUT_DELAY_MS)
 		{
-			//上电无耗材或断料延时确认后，停止电机
-			Stepper_Stop();
-			motor_state=Stop;
-			
+			runout_confirmed=true;
+
 			//断料引脚输出断料状态
 			digitalWrite(DUANLIAO,DUANLIAO_OUT_STATE);
 			
 			//确认断料后关闭耗材灯。
 			filament_led_active=false;
 
-			is_front=false;
-			front_time=0;
-			if(!timeout_error){
-				pause_mode_active=false;
-				is_error=false;
-			}
+			//TPU模式即使无耗材也继续按缓冲位置传感器工作；非TPU模式保持断料停机。
+			if(!tpu_mode_enabled){
+				Stepper_Stop();
+				motor_state=Stop;
+				is_front=false;
+				front_time=0;
+				if(!timeout_error){
+					pause_mode_active=false;
+					is_error=false;
+				}
 
-			return;//无耗材，结束
+				return;//非TPU模式无耗材，结束
+			}
 		}
 	}
 	else{
@@ -1321,11 +1325,13 @@ void motor_control(void)
 		filament_runout_delay_flag=false;
 	}
 
-	// 断料延时期间仍按有料显示；确认断料后已在上方返回。
-	filament_led_active=true;
-	if(!blockage_detect.blockage_flag){
-		//有耗材或断料延时未超时，断料引脚输出非断料状态
-		digitalWrite(DUANLIAO,!DUANLIAO_OUT_STATE);
+	// 断料延时期间仍按有料显示；TPU模式确认断料后继续保留断料指示。
+	if(!runout_confirmed){
+		filament_led_active=true;
+		if(!blockage_detect.blockage_flag){
+			//有耗材或断料延时未超时，断料引脚输出非断料状态
+			digitalWrite(DUANLIAO,!DUANLIAO_OUT_STATE);
+		}
 	}
 
 		
