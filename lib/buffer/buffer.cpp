@@ -2,7 +2,7 @@
   ***************************************************************************************
   * @file    buffer.cpp
   * @author  lijihu
-  * @version V1.0.0
+  * @version V2.0.4
   * @date    2025/05/10
   * @brief   实现缓冲器功能
 			  *缓冲器说明
@@ -26,7 +26,7 @@
 
 
 #include "buffer.h"
-#define VERSION "2.0.3"
+#define VERSION "2.0.4"
 
 //GPIO输入
 #define SIGNAL_COUNT_READ_DIR_IO()	(SIGNAL_COUNT_DIR_GPIO_Port -> IDR & SIGNAL_COUNT_DIR_Pin)
@@ -1343,6 +1343,14 @@ void motor_control(void)
 		Stepper_Stop();
 		motor_state=Stop;
 		return ;
+	}
+
+	// TPU 模式下，前进位失去触发后不再等待停止位，先退出前进。
+	if(tpu_mode_enabled&&motor_state==Forward&&!buffer.buffer1_pos1_sensor_state){
+		last_motor_state=motor_state;
+		motor_state=Stop;
+		is_front=false;
+		front_time=0;
 	}
 
 	//缓冲器位置记录
