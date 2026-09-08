@@ -55,6 +55,7 @@ static const uint16_t BUFFER_MAGIC_NUMBER = 0x55AD;
 static const uint16_t BUFFER_LEGACY_ACCEL_MAGIC_NUMBER = 0x55AC;
 static const uint16_t BUFFER_LEGACY_RPM_MAGIC_NUMBER = 0x55AA;
 static const uint16_t BUFFER_LEGACY_MM_S_MAGIC_NUMBER = 0x55AB;
+static const uint32_t TPU_FRONT_LOST_STOP_MS = 250;
 static const bool DEFAULT_TPU_MODE = false;
 static const float BMG_GEAR_RATIO = 3.0f;
 static const float BMG_DRIVE_CIRCUMFERENCE_MM = 22.93f;
@@ -80,6 +81,7 @@ static const uint8_t HALL_EVENT_QUEUE_SIZE = 16;
 bool is_error=false;//错误标志位，如果连续60s推送耗材没停过，则认为错误
 static volatile bool timeout_error=false;
 static bool pause_mode_active=false;
+static uint32_t tpu_front_lost_time_ms=0;
 String serial_buf;
 
 static HardwareTimer timer(TIM6);//超时出错
@@ -1346,11 +1348,18 @@ void motor_control(void)
 	}
 
 	// TPU 模式下，前进位失去触发后不再等待停止位，先退出前进。
-	if(tpu_mode_enabled&&motor_state==Forward&&!buffer.buffer1_pos1_sensor_state){
-		last_motor_state=motor_state;
-		motor_state=Stop;
-		is_front=false;
-		front_time=0;
+	if(tpu_mode_enabled && motor_state==Forward && !buffer.buffer1_pos1_sensor_state){
+		if(tpu_front_lost_time_ms==0){
+			tpu_front_lost_time_ms=cur_times;
+		}else if(cur_times - tpu_front_lost_time_ms >= TPU_FRONT_LOST_STOP_MS){
+			last_motor_state=motor_state;
+			motor_state=Stop;
+			is_front=false;
+			front_time=0;
+			tpu_front_lost_time_ms=0;
+		}
+	}else{
+		tpu_front_lost_time_ms=0;
 	}
 
 	//缓冲器位置记录
