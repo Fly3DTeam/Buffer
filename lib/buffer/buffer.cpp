@@ -26,7 +26,7 @@
 
 
 #include "buffer.h"
-#define VERSION "2.0.4"
+#define VERSION "2.0.6"
 
 //GPIO输入
 #define SIGNAL_COUNT_READ_DIR_IO()	(SIGNAL_COUNT_DIR_GPIO_Port -> IDR & SIGNAL_COUNT_DIR_Pin)
@@ -55,8 +55,16 @@ static const uint16_t BUFFER_MAGIC_NUMBER = 0x55AD;
 static const uint16_t BUFFER_LEGACY_ACCEL_MAGIC_NUMBER = 0x55AC;
 static const uint16_t BUFFER_LEGACY_RPM_MAGIC_NUMBER = 0x55AA;
 static const uint16_t BUFFER_LEGACY_MM_S_MAGIC_NUMBER = 0x55AB;
-static const uint32_t TPU_FRONT_LOST_STOP_MS = 250;
-static const bool DEFAULT_TPU_MODE = false;
+static const uint8_t MATERIAL_MODE_NON_TPU = 0;
+static const uint8_t MATERIAL_MODE_TPU1 = 1;
+static const uint8_t MATERIAL_MODE_TPU2 = 2;
+static const uint8_t MATERIAL_MODE_COUNT = 3;
+static const uint8_t DEFAULT_MATERIAL_MODE = MATERIAL_MODE_NON_TPU;
+static const uint32_t TPU1_FRONT_LOST_STOP_MS = 250;
+static const uint32_t TPU2_FRONT_LOST_STOP_MS = 50;
+static const uint32_t TPU2_FILAMENT_BLINK_MS = 60;
+static const uint8_t TPU2_FILAMENT_FLASH_PAIRS = 2;
+static const uint8_t TPU2_FILAMENT_FLASH_TOGGLES = TPU2_FILAMENT_FLASH_PAIRS*2U - 1;
 static const float BMG_GEAR_RATIO = 3.0f;
 static const float BMG_DRIVE_CIRCUMFERENCE_MM = 22.93f;
 static const float BMG_MOTOR_STEPS_PER_MM = 200.0f*Move_Divide_NUM*BMG_GEAR_RATIO/BMG_DRIVE_CIRCUMFERENCE_MM;
@@ -122,7 +130,7 @@ volatile uint8_t key1_press_cnt=0;
 volatile uint8_t key2_press_cnt=0;
 static volatile bool manual_key_control_active=false;
 static bool fast_mode_enabled=true;
-static bool tpu_mode_enabled=DEFAULT_TPU_MODE;
+static uint8_t material_mode=DEFAULT_MATERIAL_MODE;
 static bool dual_key_chord_active=false;
 static bool dual_key_chord_triggered=false;
 static bool filament_led_active=false;
@@ -201,6 +209,10 @@ void Filament_LED_Update(void);
 float fastAtof(const char *s);
 void Signal_Dir_Init(void);
 bool IsNoMaterial(void);
+bool IsTPUMode(void);
+bool IsTPU1Mode(void);
+bool IsTPU2Mode(void);
+const char* MaterialModeName(void);
 float BmgRpmToMmS(int32_t rpm);
 float StepperMotorStepsPerMm(void);
 uint16_t StepperExpectedMicrosteps(void);
@@ -276,6 +288,29 @@ bool IsNoMaterial(void){
 	return no_material;
 }
 
+bool IsTPUMode(void){
+	return material_mode != MATERIAL_MODE_NON_TPU;
+}
+
+bool IsTPU1Mode(void){
+	return material_mode == MATERIAL_MODE_TPU1;
+}
+
+bool IsTPU2Mode(void){
+	return material_mode == MATERIAL_MODE_TPU2;
+}
+
+const char* MaterialModeName(void){
+	switch(material_mode){
+		case MATERIAL_MODE_TPU1:
+			return "TPU1";
+		case MATERIAL_MODE_TPU2:
+			return "TPU2";
+		default:
+			return "non-TPU";
+	}
+}
+
 void buffer_parameter_init(Buffer_Parameter &buffer_para){
 	EEPROM.get(0, buffer_para);
 	if(buffer_para.magic_number==BUFFER_LEGACY_RPM_MAGIC_NUMBER){
@@ -289,23 +324,23 @@ void buffer_parameter_init(Buffer_Parameter &buffer_para){
 		}
 		buffer_para.acceleration=DEFAULT_ACCELERATION_MM_S2;
 		buffer_para.magic_number=BUFFER_MAGIC_NUMBER;
-		buffer_para.tpu_mode=DEFAULT_TPU_MODE;
+		buffer_para.tpu_mode=DEFAULT_MATERIAL_MODE;
 		EEPROM.put(0, buffer_para);
 	}
 	else if(buffer_para.magic_number==BUFFER_LEGACY_MM_S_MAGIC_NUMBER){
 		buffer_para.acceleration=DEFAULT_ACCELERATION_MM_S2;
 		buffer_para.magic_number=BUFFER_MAGIC_NUMBER;
-		buffer_para.tpu_mode=DEFAULT_TPU_MODE;
+		buffer_para.tpu_mode=DEFAULT_MATERIAL_MODE;
 		EEPROM.put(0, buffer_para);
 	}
 	else if(buffer_para.magic_number==BUFFER_LEGACY_ACCEL_MAGIC_NUMBER){
 		// 2.0.2及以前没有耗材模式字段，升级后默认使用非TPU模式。
 		buffer_para.magic_number=BUFFER_MAGIC_NUMBER;
-		buffer_para.tpu_mode=DEFAULT_TPU_MODE;
+		buffer_para.tpu_mode=DEFAULT_MATERIAL_MODE;
 		EEPROM.put(0, buffer_para);
 	}
 	else if(buffer_para.magic_number!=BUFFER_MAGIC_NUMBER){
-		buffer_para=Buffer_Parameter{DEFAULT_TIMEOUT,DEFAULT_STEPS,DEFAULT_ENCODER_LENGTH,DEFAULT_ALLOW_ERROR_SCALE,DEFAULT_SPEED_MM_S,I_CURRENT,DUANLIAO_OUT_STATE,BUFFER_MAGIC_NUMBER,DEFAULT_ACCELERATION_MM_S2,DEFAULT_TPU_MODE};
+		buffer_para=Buffer_Parameter{DEFAULT_TIMEOUT,DEFAULT_STEPS,DEFAULT_ENCODER_LENGTH,DEFAULT_ALLOW_ERROR_SCALE,DEFAULT_SPEED_MM_S,I_CURRENT,DUANLIAO_OUT_STATE,BUFFER_MAGIC_NUMBER,DEFAULT_ACCELERATION_MM_S2,DEFAULT_MATERIAL_MODE};
 		EEPROM.put(0, buffer_para);
 	}
 	timeout=buffer_para.timeout;
@@ -336,8 +371,11 @@ void buffer_parameter_init(Buffer_Parameter &buffer_para){
 		buffer_para.acceleration=acceleration;
 		EEPROM.put(0, buffer_para);
 	}
-	tpu_mode_enabled=buffer_para.tpu_mode;
-	fast_mode_enabled=!tpu_mode_enabled;
+	if(buffer_para.tpu_mode >= MATERIAL_MODE_COUNT){
+		buffer_para.tpu_mode = DEFAULT_MATERIAL_MODE;
+	}
+	material_mode=buffer_para.tpu_mode;
+	fast_mode_enabled=!IsTPUMode();
 }
 
 void buffer_init(){
@@ -362,7 +400,8 @@ void buffer_init(){
   filament_led_active=!IsNoMaterial();
   buffer_motor_init();
   Signal_Dir_Init();
-	Serial.println(tpu_mode_enabled?"material mode: TPU":"material mode: non-TPU");
+	Serial.print("material mode: ");
+	Serial.println(MaterialModeName());
 //   delay(1000);
 
   timer.pause();
@@ -511,12 +550,43 @@ void Filament_LED_Update(void){
 		digitalWrite(START_LED,LOW);
 		return;
 	}
-	if(tpu_mode_enabled){
-		// TPU模式下耗材灯与状态灯反相，形成交替闪烁。
+	if(!IsTPUMode()){
+		digitalWrite(START_LED,HIGH);
+		return;
+	}
+	if(IsTPU1Mode()){
 		digitalWrite(START_LED,digitalRead(ERR_LED)==HIGH?LOW:HIGH);
+		return;
+	}
+
+	static uint32_t tpu2_blink_start_ms=0;
+	static uint8_t tpu2_blink_toggle_count=0;
+	static bool tpu2_prev_err_high=true;
+	bool err_high=digitalRead(ERR_LED);
+
+	if(err_high){
+		digitalWrite(START_LED,LOW);
+		tpu2_prev_err_high=true;
+		tpu2_blink_toggle_count=0;
 	}
 	else{
-		digitalWrite(START_LED,HIGH);
+		if(tpu2_prev_err_high){
+			tpu2_prev_err_high=false;
+			digitalWrite(START_LED,HIGH);
+			tpu2_blink_start_ms=millis();
+			tpu2_blink_toggle_count=0;
+			return;
+		}
+		if(tpu2_blink_toggle_count<TPU2_FILAMENT_FLASH_TOGGLES){
+			if(millis()-tpu2_blink_start_ms>=TPU2_FILAMENT_BLINK_MS){
+				tpu2_blink_start_ms=millis();
+				digitalToggle(START_LED);
+				tpu2_blink_toggle_count++;
+			}
+		}
+		else{
+			digitalWrite(START_LED,LOW);
+		}
 	}
 }
 
@@ -573,7 +643,7 @@ uint32_t StepperBoostPulseThreshold(void){
 }
 
 uint32_t StepperRunCurrentMa(void){
-	return tpu_mode_enabled?TPU_RUN_CURRENT_MA:I_CURRENT;
+	return IsTPUMode()?TPU_RUN_CURRENT_MA:I_CURRENT;
 }
 
 uint32_t StepperBoostCurrentMa(void){
@@ -649,7 +719,7 @@ void Stepper_EnableDriver(void){
 }
 
 void Stepper_IdleDisableTask(uint32_t nowTime){
-	if(!tpu_mode_enabled||step_running_state!=Stop||!step_driver_enabled||!step_idle_timer_active){
+	if(!IsTPUMode()||step_running_state!=Stop||!step_driver_enabled||!step_idle_timer_active){
 		return;
 	}
 	if(nowTime-step_idle_start_ms>=MOTOR_IDLE_DISABLE_MS){
@@ -689,7 +759,7 @@ void Stepper_Stop(void){
 	Stepper_SetMicrosteps(MOVE_RUN_MICROSTEPS);
 	Stepper_RestoreRunCurrent();
 	Stepper_SetSilentMode();
-	if(!tpu_mode_enabled){
+	if(!IsTPUMode()){
 		// 非TPU模式不需要静止保持力，停止后立即失能。
 		WRITE_EN_PIN(1);
 		step_driver_enabled=false;
@@ -703,8 +773,8 @@ void Stepper_Stop(void){
 }
 
 void ApplyMaterialMode(uint32_t nowTime){
-	fast_mode_enabled=!tpu_mode_enabled;
-	if(tpu_mode_enabled){
+	fast_mode_enabled=!IsTPUMode();
+	if(IsTPUMode()){
 		// TPU模式禁止高速补偿；若已在高速，按加速度平滑退出。
 		Stepper_DisableBoost(step_running_state);
 		if(step_running_state==Stop){
@@ -868,8 +938,8 @@ bool Dual_Key_Update(uint32_t nowTime){
 
 	if(both_down&&!dual_key_chord_triggered){
 		ClearTimeoutAndPause();
-		tpu_mode_enabled=!tpu_mode_enabled;
-		buffer_para.tpu_mode=tpu_mode_enabled;
+		material_mode=(material_mode+1)%MATERIAL_MODE_COUNT;
+		buffer_para.tpu_mode=material_mode;
 		EEPROM.put(0,buffer_para);
 		dual_key_chord_triggered=true;
 
@@ -883,7 +953,8 @@ bool Dual_Key_Update(uint32_t nowTime){
 
 		ApplyMaterialMode(nowTime);
 		Filament_LED_Update();
-		Serial.println(tpu_mode_enabled?"material mode: TPU":"material mode: non-TPU");
+		Serial.print("material mode: ");
+		Serial.println(MaterialModeName());
 		Serial.println(fast_mode_enabled?"fast mode: enabled":"fast mode: disabled");
 	}
 
@@ -1308,7 +1379,7 @@ void motor_control(void)
 			filament_led_active=false;
 
 			//TPU模式即使无耗材也继续按缓冲位置传感器工作；非TPU模式保持断料停机。
-			if(!tpu_mode_enabled){
+			if(!IsTPUMode()){
 				Stepper_Stop();
 				motor_state=Stop;
 				is_front=false;
@@ -1348,10 +1419,11 @@ void motor_control(void)
 	}
 
 	// TPU 模式下，前进位失去触发后不再等待停止位，先退出前进。
-	if(tpu_mode_enabled && motor_state==Forward && !buffer.buffer1_pos1_sensor_state){
+	if(IsTPUMode() && motor_state==Forward && !buffer.buffer1_pos1_sensor_state){
+		uint32_t front_lost_stop_ms=IsTPU1Mode()?TPU1_FRONT_LOST_STOP_MS:TPU2_FRONT_LOST_STOP_MS;
 		if(tpu_front_lost_time_ms==0){
 			tpu_front_lost_time_ms=cur_times;
-		}else if(cur_times - tpu_front_lost_time_ms >= TPU_FRONT_LOST_STOP_MS){
+		}else if(cur_times - tpu_front_lost_time_ms >= front_lost_stop_ms){
 			last_motor_state=motor_state;
 			motor_state=Stop;
 			is_front=false;
@@ -1788,8 +1860,9 @@ void USB_Serial_Analys(void){
 				Serial.println("active_run_current(mA)="+String(StepperRunCurrentMa()));
 				Serial.println("boost_current="+String(StepperBoostCurrentMa()));
 				Serial.println("hold_current_scale="+String(MIN_HOLD_CURRENT_SCALE)+" (1/32 full scale)");
-				Serial.println("material_mode="+String(tpu_mode_enabled?"TPU":"non-TPU"));
-				Serial.println("idle_disable(ms)="+String(tpu_mode_enabled?MOTOR_IDLE_DISABLE_MS:0));
+				Serial.print("material_mode=");
+				Serial.println(MaterialModeName());
+				Serial.println("idle_disable(ms)="+String(IsTPUMode()?MOTOR_IDLE_DISABLE_MS:0));
 				Serial.println("fast_mode="+String(fast_mode_enabled));
 				Serial.println("pause_mode="+String(pause_mode_active));
 				Serial.println("timeout_error="+String(timeout_error));
