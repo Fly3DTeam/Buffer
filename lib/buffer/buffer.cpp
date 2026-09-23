@@ -2,7 +2,7 @@
   ***************************************************************************************
   * @file    buffer.cpp
   * @author  lijihu
-  * @version V2.0.4
+  * @version V2.0.7
   * @date    2025/05/10
   * @brief   实现缓冲器功能
 			  *缓冲器说明
@@ -26,7 +26,7 @@
 
 
 #include "buffer.h"
-#define VERSION "2.0.6"
+#define VERSION "2.0.7"
 
 //GPIO输入
 #define SIGNAL_COUNT_READ_DIR_IO()	(SIGNAL_COUNT_DIR_GPIO_Port -> IDR & SIGNAL_COUNT_DIR_Pin)
@@ -50,7 +50,7 @@ const uint32_t DEFAULT_TIMEOUT = 60000;
 uint32_t timeout=60000;//超时时间，单位：ms;
 static const uint32_t FILAMENT_RUNOUT_DELAY_MS = 10000;
 static const float DEFAULT_SPEED_MM_S = 30.0f;
-static const float DEFAULT_ACCELERATION_MM_S2 = 500.0f;
+static const float DEFAULT_ACCELERATION_MM_S2 = 250.0f;
 static const uint16_t BUFFER_MAGIC_NUMBER = 0x55AD;
 static const uint16_t BUFFER_LEGACY_ACCEL_MAGIC_NUMBER = 0x55AC;
 static const uint16_t BUFFER_LEGACY_RPM_MAGIC_NUMBER = 0x55AA;
@@ -61,7 +61,7 @@ static const uint8_t MATERIAL_MODE_TPU2 = 2;
 static const uint8_t MATERIAL_MODE_COUNT = 3;
 static const uint8_t DEFAULT_MATERIAL_MODE = MATERIAL_MODE_NON_TPU;
 static const uint32_t TPU1_FRONT_LOST_STOP_MS = 250;
-static const uint32_t TPU2_FRONT_LOST_STOP_MS = 50;
+static const uint32_t TPU2_FRONT_LOST_STOP_MS = 10;
 static const uint32_t TPU2_FILAMENT_BLINK_MS = 60;
 static const uint8_t TPU2_FILAMENT_FLASH_PAIRS = 2;
 static const uint8_t TPU2_FILAMENT_FLASH_TOGGLES = TPU2_FILAMENT_FLASH_PAIRS*2U - 1;
