@@ -5,7 +5,7 @@ import subprocess
 import sys
 
 
-BIN2UF2_SCRIPT = Path(r"D:\mellowProject\固件集合\bootloader\bin2uf2.py")
+BIN2UF2_SCRIPT = Path(r"scripts/bin2uf2.py")
 APPLICATION_BASE_ADDRESS = "0x08002000"
 
 
