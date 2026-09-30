@@ -128,7 +128,7 @@ volatile uint32_t key1_release_times=0;
 volatile uint32_t key2_release_times=0;
 volatile uint8_t key1_press_cnt=0;
 volatile uint8_t key2_press_cnt=0;
-static volatile bool manual_key_control_active=false;
+static volatile bool sensor_override_active=false;
 static bool fast_mode_enabled=true;
 static uint8_t material_mode=DEFAULT_MATERIAL_MODE;
 static bool dual_key_chord_active=false;
@@ -286,6 +286,10 @@ bool IsNoMaterial(void){
 		no_material = no_material && !digitalRead(MDM_DPIN);
 	}
 	return no_material;
+}
+
+bool ExternalSignalControlActive(void){
+	return digitalRead(FRONT_SIGNAL_PIN)==LOW||digitalRead(BACK_SIGNAL_PIN)==LOW;
 }
 
 bool IsTPUMode(void){
@@ -1261,20 +1265,25 @@ void motor_control(void)
 
 	}	
 
-	// 单键长按的手动控制优先于光感和外部控制信号。
+	// 单键长按和外部信号控制期间优先于光感。
+	// External forward/back signals use the same sensor override while asserted.
 	bool key1_long_request=!dual_key_gesture_active&&key1_press_flag&&!key2_press_flag&&cur_times-key1_press_times>=500;
 	bool key2_long_request=!dual_key_gesture_active&&key2_press_flag&&!key1_press_flag&&cur_times-key2_press_times>=500;
-	if(key1_long_request||(immediate_position==0&&digitalRead(BACK_SIGNAL_PIN)==LOW&&!buffer.buffer1_pos2_sensor_state))
+	bool back_signal_active=digitalRead(BACK_SIGNAL_PIN)==LOW;
+	bool front_signal_active=digitalRead(FRONT_SIGNAL_PIN)==LOW;
+	// External signal control must bypass the HALL2 stop while the signal is asserted.
+	if(key1_long_request||back_signal_active)
 	{
 		ClearTimeoutAndPause();
-		manual_key_control_active=key1_long_request;
+		sensor_override_active=true;
 		Stepper_Stop();
 		Stepper_Run(Back);
 		while((key1_press_flag&&!key2_press_flag)||digitalRead(BACK_SIGNAL_PIN)==LOW){
 			bool key_held=key1_press_flag&&!key2_press_flag;
-			manual_key_control_active=key_held;
+			bool signal_held=digitalRead(BACK_SIGNAL_PIN)==LOW;
+			sensor_override_active=key_held||signal_held;
 			read_sensor_state();
-			if(!key_held&&(buffer.buffer1_pos2_sensor_state||Hall_Sensor_ImmediatePending())){
+			if(!key_held&&!signal_held&&(buffer.buffer1_pos2_sensor_state||Hall_Sensor_ImmediatePending())){
 				break;
 			}
 			Stepper_CheckBoost(Back,!IsNoMaterial());
@@ -1286,7 +1295,7 @@ void motor_control(void)
 		}//等待松手
 					
 
-		manual_key_control_active=false;
+		sensor_override_active=false;
 		Stepper_Stop();
 		motor_state=Stop;
 
@@ -1298,17 +1307,18 @@ void motor_control(void)
 		ClearTimeoutAndPause();
 
 	}
-	else if(key2_long_request||(immediate_position==0&&digitalRead(FRONT_SIGNAL_PIN)==LOW&&!buffer.buffer1_pos2_sensor_state))
+	else if(key2_long_request||front_signal_active)
 	{
 		ClearTimeoutAndPause();
-		manual_key_control_active=key2_long_request;
+		sensor_override_active=true;
 		Stepper_Stop();
 		Stepper_Run(Forward);
 		while((key2_press_flag&&!key1_press_flag)||digitalRead(FRONT_SIGNAL_PIN)==LOW){
 			bool key_held=key2_press_flag&&!key1_press_flag;
-			manual_key_control_active=key_held;
+			bool signal_held=digitalRead(FRONT_SIGNAL_PIN)==LOW;
+			sensor_override_active=key_held||signal_held;
 			read_sensor_state();
-			if(!key_held&&(buffer.buffer1_pos2_sensor_state||Hall_Sensor_ImmediatePending())){
+			if(!key_held&&!signal_held&&(buffer.buffer1_pos2_sensor_state||Hall_Sensor_ImmediatePending())){
 				break;
 			}
 			Stepper_CheckBoost(Forward,!IsNoMaterial());
@@ -1319,7 +1329,7 @@ void motor_control(void)
 		};//等待松手
 					
 
-		manual_key_control_active=false;
+		sensor_override_active=false;
 		Stepper_Stop();
 		motor_state=Stop;
 
@@ -1579,8 +1589,9 @@ void key2_it_callback(void){
 }
 
 void Hall_Sensor_Latch(uint8_t position){
-	if(manual_key_control_active){
-		// 单键长按手动运行期间忽略全部缓冲光感，包括停止位的立即停脉冲。
+	if(sensor_override_active||ExternalSignalControlActive()){
+		// 手动或外部信号运行期间忽略全部缓冲光感，包括停止位的立即停脉冲。
+		// The override also covers an asserted external IO signal.
 		return;
 	}
 	if(position==2){

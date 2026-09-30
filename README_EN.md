@@ -36,9 +36,9 @@ Chinese documentation is available in [README.md](README.md). Version history is
 
 ## Behavior
 
-- In automatic control, the stop position has the highest priority. When detected, it disables STEP pulses immediately before the main loop completes current/mode/enable recovery; a single-button long-press manual command has priority over the stop position.
+- In automatic control, the stop position has the highest priority. When detected, it disables STEP pulses immediately before the main loop completes current/mode/enable recovery; a single-button long-press manual command or an asserted external IO signal has priority over the stop position.
 - Normal speed is set with the `speed` command in `mm/s`. Default: `30mm/s`.
-- Acceleration is set with the `accel` command in `mm/s^2`. Default: `500mm/s^2`.
+- Acceleration is set with the `accel` command in `mm/s^2`. Default: `250mm/s^2`.
 - Direction is controlled by buffer sensors, buttons, or external forward/back signals.
 - The firmware provides TPU and non-TPU filament modes. The selected mode is stored in EEPROM and survives power cycles; new devices and first upgrades from older firmware default to non-TPU mode.
 - TPU mode uses a fixed `400mA RMS` run current and disables boost. Even after runout is confirmed, the motor continues operating normally from the three buffer-position sensors. After stopping, the driver remains enabled with `IHOLD=0`, the minimum nonzero hold current (`1/32` of full scale, about `30mA RMS` with the default configuration), and is disabled after `30s` of inactivity. Firmware explicitly sets `PWMCONF.freewheel=0`, so this remains normal current regulation rather than freewheeling or passive braking.
@@ -51,7 +51,7 @@ Chinese documentation is available in [README.md](README.md). Version history is
 
 - Single-click either button to clear the pause/error state and resume automatic operation.
 - Double-click either button to pause automatic operation and stop the motor.
-- Hold the back button for manual retraction, or hold the forward button for manual feeding. A single-button long press has the highest priority and ignores all three buffer sensors, including the HALL2 stop position, until the button is released. External forward/back signals do not bypass the sensors.
+- Hold the back button for manual retraction, or hold the forward button for manual feeding. A single-button long press has the highest priority and ignores all three buffer sensors, including the HALL2 stop position, until the button is released. External forward/back signals use the same sensor override while asserted and stop when released.
 - Press both buttons together to switch between TPU and non-TPU modes and save the selection to EEPROM. Both buttons must be released before another switch is accepted.
 - Switching TPU/non-TPU mode does not trigger an extra status-LED indication; the status LED continues showing the current operating or fault state.
 
