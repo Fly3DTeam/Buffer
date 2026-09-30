@@ -40,9 +40,9 @@ Chinese documentation is available in [README.md](README.md). Version history is
 - Normal speed is set with the `speed` command in `mm/s`. Default: `30mm/s`.
 - Acceleration is set with the `accel` command in `mm/s^2`. Default: `250mm/s^2`.
 - Direction is controlled by buffer sensors, buttons, or external forward/back signals.
-- The firmware provides TPU and non-TPU filament modes. The selected mode is stored in EEPROM and survives power cycles; new devices and first upgrades from older firmware default to non-TPU mode.
+- The firmware provides TPU1, TPU2, and non-TPU filament modes. The selected mode is stored in EEPROM and survives power cycles; new devices and first upgrades from older firmware default to non-TPU mode.
 - TPU mode uses a fixed `400mA RMS` run current and disables boost. Even after runout is confirmed, the motor continues operating normally from the three buffer-position sensors. After stopping, the driver remains enabled with `IHOLD=0`, the minimum nonzero hold current (`1/32` of full scale, about `30mA RMS` with the default configuration), and is disabled after `30s` of inactivity. Firmware explicitly sets `PWMCONF.freewheel=0`, so this remains normal current regulation rather than freewheeling or passive braking.
-- Non-TPU mode permits boost to `100mm/s` after more than `100mm` of movement without a position change. The driver is disabled immediately whenever the motor stops, with no standstill current.
+- Non-TPU mode with boost enabled permits boost to `100mm/s` after more than `100mm` of movement without a position change. The driver is disabled immediately whenever the motor stops, with no standstill current.
 - Boost raises current and selects high-speed mode. On exit it ramps back to normal speed using `accel`, then restores normal current and silent mode.
 - Boost is disabled when there is no filament.
 - The firmware uses 16 microsteps everywhere to reduce STEP interrupt load and improve stability at `100mm/s`.
@@ -52,8 +52,9 @@ Chinese documentation is available in [README.md](README.md). Version history is
 - Single-click either button to clear the pause/error state and resume automatic operation.
 - Double-click either button to pause automatic operation and stop the motor.
 - Hold the back button for manual retraction, or hold the forward button for manual feeding. A single-button long press has the highest priority and ignores all three buffer sensors, including the HALL2 stop position, until the button is released. External forward/back signals use the same sensor override while asserted and stop when released.
-- Press both buttons together to switch between TPU and non-TPU modes and save the selection to EEPROM. Both buttons must be released before another switch is accepted.
-- Switching TPU/non-TPU mode does not trigger an extra status-LED indication; the status LED continues showing the current operating or fault state.
+- Short-press both buttons: cycle through TPU1, TPU2, and non-TPU modes and save the selection to EEPROM. Both buttons must be released before another switch is accepted.
+- Hold both buttons together for `2s`: toggle boost mode. It is off by default, is saved to EEPROM, and survives power cycles. Enabling gives five status-LED flashes; disabling gives `2s` solid on followed by `500ms` off.
+- Boost mode only enables high-speed compensation in non-TPU mode; TPU modes always keep high-speed compensation disabled.
 
 ## Filament Runout
 
@@ -84,6 +85,8 @@ All `ERR_LED / PA15` indications are listed below:
 | Double flash | `100ms` on, `100ms` off, `100ms` on, then `600ms` off | Yes | Normal operation with an MDM module connected |
 | Slow blink | `500ms` on and `500ms` off | Yes | Normal operation without an MDM module |
 
+Boost-mode changes use a one-shot indication with priority over the repeating status patterns. The normal status indication resumes afterward. Serial output reports `fast mode: enabled/disabled`, and `info` shows the current setting.
+
 When multiple states are active, the display priority is: TMC fault → blockage → forward timeout → pause → MDM connected → normal without MDM.
 
 `START_LED / PA8` is the filament LED. It blinks with filament present in TPU mode, stays solid on with filament present in non-TPU mode, and turns off after runout is confirmed.
@@ -99,7 +102,8 @@ All configurable parameters below are stored in EEPROM and survive power cycles:
 
 | Parameter | Default | Unit/meaning | How to change |
 | --- | ---: | --- | --- |
-| Filament mode | Non-TPU | Enables boost and disables the driver immediately after stopping | Press both buttons |
+| Filament mode | Non-TPU | TPU1, TPU2, or non-TPU mode | Short-press both buttons |
+| Boost mode | Off | Enables high-speed compensation in non-TPU mode; survives power cycles | Hold both buttons for `2s` |
 | Forward timeout `timeout` | `60000` | `ms`; enters timeout error after `60s` of continuous forward motion | `timeout <value>` |
 | Normal speed `speed` | `30` | `mm/s` | `speed <value>` |
 | Acceleration/deceleration `accel` | `500` | `mm/s²` | `accel <value>` |

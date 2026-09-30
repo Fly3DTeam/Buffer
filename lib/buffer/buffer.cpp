@@ -2,7 +2,7 @@
   ***************************************************************************************
   * @file    buffer.cpp
   * @author  lijihu
-  * @version V2.0.7
+  * @version V2.0.8
   * @date    2025/05/10
   * @brief   实现缓冲器功能
 			  *缓冲器说明
@@ -26,7 +26,7 @@
 
 
 #include "buffer.h"
-#define VERSION "2.0.7"
+#define VERSION "2.0.8"
 
 //GPIO输入
 #define SIGNAL_COUNT_READ_DIR_IO()	(SIGNAL_COUNT_DIR_GPIO_Port -> IDR & SIGNAL_COUNT_DIR_Pin)
@@ -60,6 +60,19 @@ static const uint8_t MATERIAL_MODE_TPU1 = 1;
 static const uint8_t MATERIAL_MODE_TPU2 = 2;
 static const uint8_t MATERIAL_MODE_COUNT = 3;
 static const uint8_t DEFAULT_MATERIAL_MODE = MATERIAL_MODE_NON_TPU;
+static const bool DEFAULT_FAST_MODE_ENABLED = false;
+static const uint32_t DUAL_KEY_FAST_MODE_HOLD_MS = 2000;
+static const uint8_t FAST_MODE_NOTICE_NONE = 0;
+static const uint8_t FAST_MODE_NOTICE_ENABLED = 1;
+static const uint8_t FAST_MODE_NOTICE_DISABLED = 2;
+static const uint32_t FAST_MODE_NOTICE_ENABLED_MS = 2000;
+static const uint32_t FAST_MODE_NOTICE_DISABLED_MS = 2500;
+static const uint8_t FAST_MODE_STORE_MAGIC = 0xA5;
+static const int EEPROM_ADDR_FAST_MODE = 64;
+struct FastModeStore{
+	uint8_t magic;
+	uint8_t enabled;
+};
 static const uint32_t TPU1_FRONT_LOST_STOP_MS = 250;
 static const uint32_t TPU2_FRONT_LOST_STOP_MS = 10;
 static const uint32_t TPU2_FILAMENT_BLINK_MS = 60;
@@ -129,10 +142,13 @@ volatile uint32_t key2_release_times=0;
 volatile uint8_t key1_press_cnt=0;
 volatile uint8_t key2_press_cnt=0;
 static volatile bool sensor_override_active=false;
-static bool fast_mode_enabled=true;
+static bool fast_mode_enabled=DEFAULT_FAST_MODE_ENABLED;
 static uint8_t material_mode=DEFAULT_MATERIAL_MODE;
 static bool dual_key_chord_active=false;
 static bool dual_key_chord_triggered=false;
+static uint32_t dual_key_chord_start_ms=0;
+static uint8_t fast_mode_notice=FAST_MODE_NOTICE_NONE;
+static uint32_t fast_mode_notice_start_ms=0;
 static bool filament_led_active=false;
 
 uint32_t inform_flag=false;
@@ -253,6 +269,8 @@ uint8_t Hall_Sensor_ConsumeImmediate(void);
 bool Hall_Sensor_ImmediatePending(void);
 bool Dual_Key_Update(uint32_t nowTime);
 void ClearTimeoutAndPause(void);
+bool FastMode_SaveSetting(bool enabled);
+bool FastMode_LoadSetting(void);
 // void Buffer_S3_IT_Callback(void);
 // void Buffer_S2_IT_Callback(void);
 // void Buffer_S1_IT_Callback(void);
@@ -313,6 +331,25 @@ const char* MaterialModeName(void){
 		default:
 			return "non-TPU";
 	}
+}
+
+bool FastMode_SaveSetting(bool enabled){
+	FastModeStore store={FAST_MODE_STORE_MAGIC,(uint8_t)(enabled?1:0)};
+	EEPROM.put(EEPROM_ADDR_FAST_MODE,store);
+	FastModeStore verify={0,0};
+	EEPROM.get(EEPROM_ADDR_FAST_MODE,verify);
+	return verify.magic==store.magic&&verify.enabled==store.enabled;
+}
+
+bool FastMode_LoadSetting(void){
+	FastModeStore store={0,0};
+	EEPROM.get(EEPROM_ADDR_FAST_MODE,store);
+	if(store.magic!=FAST_MODE_STORE_MAGIC||store.enabled>1){
+		store.magic=FAST_MODE_STORE_MAGIC;
+		store.enabled=DEFAULT_FAST_MODE_ENABLED?1:0;
+		EEPROM.put(EEPROM_ADDR_FAST_MODE,store);
+	}
+	return store.enabled!=0;
 }
 
 void buffer_parameter_init(Buffer_Parameter &buffer_para){
@@ -379,7 +416,7 @@ void buffer_parameter_init(Buffer_Parameter &buffer_para){
 		buffer_para.tpu_mode = DEFAULT_MATERIAL_MODE;
 	}
 	material_mode=buffer_para.tpu_mode;
-	fast_mode_enabled=!IsTPUMode();
+	fast_mode_enabled=FastMode_LoadSetting();
 }
 
 void buffer_init(){
@@ -406,6 +443,7 @@ void buffer_init(){
   Signal_Dir_Init();
 	Serial.print("material mode: ");
 	Serial.println(MaterialModeName());
+	Serial.println(fast_mode_enabled?"fast mode: enabled":"fast mode: disabled");
 //   delay(1000);
 
   timer.pause();
@@ -450,6 +488,28 @@ void Status_LED_Update(uint32_t nowTime){
 	static uint32_t lastToggleTime=0;
 	static uint8_t led_state=0;
 	static uint8_t last_mode=0xff;
+
+	if(fast_mode_notice!=FAST_MODE_NOTICE_NONE){
+		uint32_t elapsed=nowTime-fast_mode_notice_start_ms;
+		uint32_t duration=fast_mode_notice==FAST_MODE_NOTICE_ENABLED?
+			FAST_MODE_NOTICE_ENABLED_MS:FAST_MODE_NOTICE_DISABLED_MS;
+		if(elapsed<duration){
+			if(fast_mode_notice==FAST_MODE_NOTICE_ENABLED){
+				// 开启快速模式：五次明显闪烁（200ms亮，200ms灭）。
+				digitalWrite(ERR_LED,((elapsed/200)%2)==0?HIGH:LOW);
+			}
+			else{
+				// 关闭快速模式：长亮2s，再熄灭500ms。
+				digitalWrite(ERR_LED,elapsed<2000?HIGH:LOW);
+			}
+			return;
+		}
+		fast_mode_notice=FAST_MODE_NOTICE_NONE;
+		last_mode=0xff;
+		led_state=0;
+		lastToggleTime=nowTime;
+		digitalWrite(ERR_LED,LOW);
+	}
 
 	uint8_t mode=3;
 	if(tmc_status_error) mode=0;
@@ -777,7 +837,6 @@ void Stepper_Stop(void){
 }
 
 void ApplyMaterialMode(uint32_t nowTime){
-	fast_mode_enabled=!IsTPUMode();
 	if(IsTPUMode()){
 		// TPU模式禁止高速补偿；若已在高速，按加速度平滑退出。
 		Stepper_DisableBoost(step_running_state);
@@ -906,7 +965,7 @@ void Stepper_CheckBoost(Motor_State state,bool boost_allowed){
 	if(state==Stop){
 		return;
 	}
-	if(!fast_mode_enabled){
+	if(!fast_mode_enabled||IsTPUMode()){
 		boost_allowed=false;
 	}
 	if(!boost_allowed){
@@ -938,14 +997,25 @@ bool Dual_Key_Update(uint32_t nowTime){
 		}
 		dual_key_chord_active=true;
 		dual_key_chord_triggered=false;
+		dual_key_chord_start_ms=nowTime;
 	}
 
-	if(both_down&&!dual_key_chord_triggered){
+	if(both_down&&!dual_key_chord_triggered&&nowTime-dual_key_chord_start_ms>=DUAL_KEY_FAST_MODE_HOLD_MS){
 		ClearTimeoutAndPause();
-		material_mode=(material_mode+1)%MATERIAL_MODE_COUNT;
-		buffer_para.tpu_mode=material_mode;
-		EEPROM.put(0,buffer_para);
 		dual_key_chord_triggered=true;
+		bool new_fast_mode=!fast_mode_enabled;
+		if(FastMode_SaveSetting(new_fast_mode)){
+			fast_mode_enabled=new_fast_mode;
+			fast_mode_notice=fast_mode_enabled?FAST_MODE_NOTICE_ENABLED:FAST_MODE_NOTICE_DISABLED;
+			fast_mode_notice_start_ms=nowTime;
+			Serial.println(fast_mode_enabled?"fast mode: enabled":"fast mode: disabled");
+			if(!fast_mode_enabled){
+				Stepper_DisableBoost(step_running_state);
+			}
+		}
+		else{
+			Serial.println("fast mode: save failed");
+		}
 
 		// 双键动作不能继续参与单击、双击或单键长按判定。
 		noInterrupts();
@@ -954,16 +1024,23 @@ bool Dual_Key_Update(uint32_t nowTime){
 		key1_press_cnt=0;
 		key2_press_cnt=0;
 		interrupts();
-
-		ApplyMaterialMode(nowTime);
-		Filament_LED_Update();
-		Serial.print("material mode: ");
-		Serial.println(MaterialModeName());
-		Serial.println(fast_mode_enabled?"fast mode: enabled":"fast mode: disabled");
 	}
 
 	// 双键动作开始后，必须全部松开才能重新接受其它按键动作。
 	if(!key1_down&&!key2_down){
+		if(!dual_key_chord_triggered){
+			// 双键短按仍用于切换耗材模式；切换延迟到全部松开，
+			// 这样可以和双键长按快速模式切换区分开。
+			ClearTimeoutAndPause();
+			material_mode=(material_mode+1)%MATERIAL_MODE_COUNT;
+			buffer_para.tpu_mode=material_mode;
+			EEPROM.put(0,buffer_para);
+			ApplyMaterialMode(nowTime);
+			Filament_LED_Update();
+			Serial.print("material mode: ");
+			Serial.println(MaterialModeName());
+			Serial.println(fast_mode_enabled?"fast mode: enabled":"fast mode: disabled");
+		}
 		dual_key_chord_active=false;
 		dual_key_chord_triggered=false;
 		noInterrupts();
@@ -1878,7 +1955,7 @@ void USB_Serial_Analys(void){
 				Serial.print("material_mode=");
 				Serial.println(MaterialModeName());
 				Serial.println("idle_disable(ms)="+String(IsTPUMode()?MOTOR_IDLE_DISABLE_MS:0));
-				Serial.println("fast_mode="+String(fast_mode_enabled));
+				Serial.println(String("fast_mode=")+(fast_mode_enabled?"enabled":"disabled"));
 				Serial.println("pause_mode="+String(pause_mode_active));
 				Serial.println("timeout_error="+String(timeout_error));
 				Serial.println("DUANLIAO_OUT_STATE="+String(buffer_para.DUANLIAO_OUT_STATE));
