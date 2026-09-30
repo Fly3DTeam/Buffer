@@ -1032,63 +1032,67 @@ bool TMC_CheckAndRepair(void){
 	bool comm_ok=true;
 	bool config_ok=true;
 	bool fault_ok=true;
+	bool i_scale_analog=false;
+	bool pdn_disable=false;
+	bool mstep_reg_select=false;
+	bool spread_cycle=false;
+	uint8_t toff=0;
+	bool intpol=false;
+	bool pwm_autoscale=false;
+	uint8_t freewheel=0;
+	uint16_t microsteps=0;
+	uint16_t rms_current=0;
+	uint8_t version=0;
+	uint8_t gstat=0;
+	uint32_t drv_status=0;
 
 	driver.CRCerror=false;
 
-	bool i_scale_analog=driver.I_scale_analog();
+	// 通信失败时立即停止本轮读取，避免连续重试多个寄存器阻塞状态灯时序。
+	i_scale_analog=driver.I_scale_analog();
 	comm_ok &= TMC_CrcOk();
-	bool pdn_disable=driver.pdn_disable();
-	comm_ok &= TMC_CrcOk();
-	bool mstep_reg_select=driver.mstep_reg_select();
-	comm_ok &= TMC_CrcOk();
-	bool spread_cycle=driver.en_spreadCycle();
-	comm_ok &= TMC_CrcOk();
-	uint8_t toff=driver.toff();
-	comm_ok &= TMC_CrcOk();
-	bool intpol=driver.intpol();
-	comm_ok &= TMC_CrcOk();
-	bool pwm_autoscale=driver.pwm_autoscale();
-	comm_ok &= TMC_CrcOk();
-	uint8_t freewheel=driver.freewheel();
-	comm_ok &= TMC_CrcOk();
-	uint16_t microsteps=driver.microsteps();
-	comm_ok &= TMC_CrcOk();
-	uint16_t rms_current=driver.rms_current();
-	comm_ok &= TMC_CrcOk();
-	uint8_t version=driver.version();
-	comm_ok &= TMC_CrcOk();
-	uint8_t gstat=driver.GSTAT();
-	comm_ok &= TMC_CrcOk();
-	uint32_t drv_status=driver.DRV_STATUS();
-	comm_ok &= TMC_CrcOk();
+	if(comm_ok){ pdn_disable=driver.pdn_disable(); comm_ok &= TMC_CrcOk(); }
+	if(comm_ok){ mstep_reg_select=driver.mstep_reg_select(); comm_ok &= TMC_CrcOk(); }
+	if(comm_ok){ spread_cycle=driver.en_spreadCycle(); comm_ok &= TMC_CrcOk(); }
+	if(comm_ok){ toff=driver.toff(); comm_ok &= TMC_CrcOk(); }
+	if(comm_ok){ intpol=driver.intpol(); comm_ok &= TMC_CrcOk(); }
+	if(comm_ok){ pwm_autoscale=driver.pwm_autoscale(); comm_ok &= TMC_CrcOk(); }
+	if(comm_ok){ freewheel=driver.freewheel(); comm_ok &= TMC_CrcOk(); }
+	if(comm_ok){ microsteps=driver.microsteps(); comm_ok &= TMC_CrcOk(); }
+	if(comm_ok){ rms_current=driver.rms_current(); comm_ok &= TMC_CrcOk(); }
+	if(comm_ok){ version=driver.version(); comm_ok &= TMC_CrcOk(); }
+	if(comm_ok){ gstat=driver.GSTAT(); comm_ok &= TMC_CrcOk(); }
+	if(comm_ok){ drv_status=driver.DRV_STATUS(); comm_ok &= TMC_CrcOk(); }
 
-	config_ok &= !i_scale_analog;
-	config_ok &= pdn_disable;
-	config_ok &= mstep_reg_select;
-	config_ok &= (spread_cycle==step_high_speed_mode);
-	config_ok &= (toff==5);
-	config_ok &= intpol;
-	config_ok &= pwm_autoscale;
-	config_ok &= (freewheel==TMC_FREEWHEEL_NORMAL);
-	config_ok &= (microsteps==StepperExpectedMicrosteps());
-	config_ok &= (version!=0&&version!=0xff);
-	config_ok &= (abs((int32_t)rms_current-(int32_t)TMC_ExpectedCurrentMa())<=120);
+	if(comm_ok){
+		config_ok &= !i_scale_analog;
+		config_ok &= pdn_disable;
+		config_ok &= mstep_reg_select;
+		config_ok &= (spread_cycle==step_high_speed_mode);
+		config_ok &= (toff==5);
+		config_ok &= intpol;
+		config_ok &= pwm_autoscale;
+		config_ok &= (freewheel==TMC_FREEWHEEL_NORMAL);
+		config_ok &= (microsteps==StepperExpectedMicrosteps());
+		config_ok &= (version!=0&&version!=0xff);
+		config_ok &= (abs((int32_t)rms_current-(int32_t)TMC_ExpectedCurrentMa())<=120);
 
-	if(gstat&0x07){
-		driver.GSTAT(0x07);
-		if(gstat&0x06){
+		if(gstat&0x07){
+			driver.GSTAT(0x07);
+			if(gstat&0x06){
+				fault_ok=false;
+			}
+			if(gstat&0x01){
+				config_ok=false;
+			}
+		}
+
+		if(drv_status&0x3f){
 			fault_ok=false;
 		}
-		if(gstat&0x01){
-			config_ok=false;
-		}
 	}
 
-	if(drv_status&0x3f){
-		fault_ok=false;
-	}
-
-	if(!comm_ok||!config_ok){
+	if(comm_ok&&!config_ok){
 		TMC_ApplyExpectedConfig();
 	}
 
