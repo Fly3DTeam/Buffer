@@ -2,7 +2,7 @@
   ***************************************************************************************
   * @file    buffer.cpp
   * @author  lijihu
-  * @version V2.0.8
+  * @version V2.0.9
   * @date    2025/05/10
   * @brief   实现缓冲器功能
 			  *缓冲器说明
@@ -26,7 +26,7 @@
 
 
 #include "buffer.h"
-#define VERSION "2.0.8"
+#define VERSION "2.0.9"
 
 //GPIO输入
 #define SIGNAL_COUNT_READ_DIR_IO()	(SIGNAL_COUNT_DIR_GPIO_Port -> IDR & SIGNAL_COUNT_DIR_Pin)
@@ -480,6 +480,11 @@ void buffer_loop()
 			}
 		}
 
+		// PB14 汇总故障输出：超时、TMC 异常和堵料时输出低电平。
+		// 手动暂停和断料不合并到该引脚，断料继续由 PB15 输出。
+		bool fault_active=(is_error&&!pause_mode_active)||tmc_status_error||blockage_detect.blockage_flag;
+		digitalWrite(FAULT_PIN,fault_active?LOW:HIGH);
+
 		g_run_cnt++;
 	}
 }
@@ -676,6 +681,8 @@ void buffer_sensor_init(){
   pinMode(ERR_LED,OUTPUT);
   pinMode(START_LED,OUTPUT);
   pinMode(DULIAO,OUTPUT);
+  digitalWrite(FAULT_PIN,HIGH);
+  pinMode(FAULT_PIN,OUTPUT);
 
   //扩展引脚初始化
   pinMode(EXTENSION_PIN1,OUTPUT);
@@ -1958,6 +1965,9 @@ void USB_Serial_Analys(void){
 				Serial.println(String("fast_mode=")+(fast_mode_enabled?"enabled":"disabled"));
 				Serial.println("pause_mode="+String(pause_mode_active));
 				Serial.println("timeout_error="+String(timeout_error));
+				Serial.println("tmc_status_error="+String(tmc_status_error));
+				Serial.println("blockage="+String(blockage_detect.blockage_flag));
+				Serial.println("fault_output_active_low="+String(digitalRead(FAULT_PIN)==LOW));
 				Serial.println("DUANLIAO_OUT_STATE="+String(buffer_para.DUANLIAO_OUT_STATE));
 			}			
 			else if(strstr(serial_buf.c_str(),"scale")){

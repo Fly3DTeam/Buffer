@@ -31,6 +31,7 @@ Chinese documentation is available in [README.md](README.md). Version history is
 | Motor step | `STEP_PIN / PC13` | Timer pulse output |
 | TMC UART | `UART / PB1` | TMC2225 UART communication |
 | Runout output | `DUANLIAO / PB15` | Configurable active level |
+| Fault output | `FAULT_PIN / PB14` | Active low, for printer/RRF fault detection |
 | Status LED | `ERR_LED / PA15` | Status/fault indication |
 | Filament LED | `START_LED / PA8` | Filament/mode indication |
 
@@ -71,6 +72,17 @@ Chinese documentation is available in [README.md](README.md). Version history is
 - A single click, manual button control, a dual-button filament-mode switch, or any filament-state change (reload/removal) clears a timeout error and resumes operation.
 - The same recovery actions also clear pause mode; double-clicking either individual button still explicitly enters pause mode.
 - Other manually triggered errors are not cleared as timeout errors.
+
+## Fault Output
+
+`FAULT_PIN / PB14` is the aggregate fault output and is **active low**:
+
+- It stays high during normal operation.
+- It goes low for a forward timeout, a persistent TMC communication/configuration/driver fault, or a detected blockage.
+- It returns high after the timeout is cleared or the TMC status recovers; the current blockage state lasts about `3s`.
+- Manual pause and runout are not included on this pin. Runout remains available on `DUANLIAO / PB15`.
+
+The printer can configure `PB14` as an active-low input and use its falling edge to trigger an RRF macro for pausing or notification.
 
 ## Status LED
 

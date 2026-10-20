@@ -47,6 +47,7 @@
 
 #define DUANLIAO    PB15 //断料
 #define DULIAO    	PB15 //堵料
+#define FAULT_PIN   PB14 //汇总故障输出，低电平有效
 #define ERR_LED     PA15 //指示灯
 #define START_LED   PA8  //指示灯
 
